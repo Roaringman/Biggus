@@ -1,0 +1,747 @@
+-- Biggus dungeons: the dungeon runs guild members do together, who died in them, and who got the loot.
+--
+--  * Entering a 5-player dungeon with at least one other guild member in the group logs a run. Guild
+--    members who join later are added to it. Coming back in (after a wipe, say) within an hour, with
+--    some of the same people, is still the same run.
+--  * Deaths: while you're in a run, the guild members in it are watched; each one going from alive to
+--    dead counts a death in that run.
+--  * Loot: rare (blue) and better items a guild member in the run loots, read from the loot messages.
+--  * All of it is passed on to the other Biggus users in the guild as hidden addon messages, so each
+--    copy counts the whole guild, not only its owner - for the members online at the time. Forever's
+--    live realms sometimes refuse addon messages: those wait and are tried again a minute later (also
+--    after the next login). Messages go one a second, the rate the game allows.
+--  * Several group members with Biggus all report the same run, deaths and loot; it's recognised as
+--    the same (same dungeon, same time, same people), and deaths and loot take the highest count
+--    anyone saw rather than adding them up.
+--
+-- Messages (fields separated by tabs):
+--   R  run:    "R", start, last seen, instance ID, dungeon, members (comma separated)
+--   X  deaths: "X", run start, instance ID, member, deaths in that run
+--   L  loot:   "L", run start, instance ID, member, item ID, how many, quality
+
+local ADDON, B = ...
+local D = {}
+B.Dungeons = D
+
+local PREFIX = "BIGGUS"
+local SAME_RUN = 3600       -- seconds: this close in time, same dungeon and same people = the same run
+local RETRY = 60            -- seconds to wait after a message was refused
+local MIN_LOOT_QUALITY = 3  -- rare (blue) and better
+local EPIC = 4
+local UNITS = { "player", "party1", "party2", "party3", "party4" }
+
+local DEATH_QUIPS = {
+    "%s died. The floor says hi.",
+    "%s is inspecting the floor again.",
+    "%s has fallen. Someone write it down. (We did.)",
+    "%s tried to tank it with their face.",
+    "RIP %s. Gone, but very much counted.",
+}
+
+local ENVY_QUIPS = {
+    "%s got %s. Envy level: high.",
+    "%s got %s. Not that anyone's jealous.",
+    "%s got %s. The RNG gods have favorites.",
+    "%s got %s. Some people have all the luck.",
+}
+
+local SELF_LOOT_QUIPS = {
+    "You got %s. The guild is pretending to be happy for you.",
+    "You got %s. Try not to brag. (Brag a little.)",
+}
+
+local function Now()
+    return GetServerTime and GetServerTime() or time() -- server time: players' clocks differ
+end
+
+local function Pick(list)
+    return list[math.random(#list)]
+end
+
+local function Runs()
+    local g = B.Guild()
+    if not g then return nil, nil end
+    g.runs = g.runs or {}
+    g.outbox = g.outbox or {}
+    return g.runs, g
+end
+
+local statsCache = {}
+local function Dirty()
+    statsCache = {}
+end
+
+---------------------------------------------------------------------------------------------------
+-- Who's in the group
+
+local function FullName(unit)
+    local name, realm = UnitFullName(unit)
+    if not name or name == UNKNOWNOBJECT then return nil end
+    if not realm or realm == "" then
+        realm = (GetNormalizedRealmName and GetNormalizedRealmName()) or (GetRealmName():gsub("%s", ""))
+    end
+    return name .. "-" .. realm
+end
+
+-- you and the guild members in your party
+local function GuildmatesInGroup()
+    local names = {}
+    local me = FullName("player")
+    if me then table.insert(names, me) end
+    for i = 1, 4 do
+        local unit = "party" .. i
+        if UnitExists(unit) and UnitIsPlayer(unit) and UnitIsInMyGuild(unit) then
+            local name = FullName(unit)
+            if name then table.insert(names, name) end
+        end
+    end
+    table.sort(names)
+    return names
+end
+
+-- the run's member with this name (with or without the realm)
+local function MemberNamed(r, who)
+    local short = B.ShortName(who)
+    for _, x in ipairs(r.members) do
+        if x == who or B.ShortName(x) == short then return x end
+    end
+end
+
+---------------------------------------------------------------------------------------------------
+-- Storing runs
+
+local function Overlap(a, b)
+    local set, n = {}, 0
+    for _, x in ipairs(a) do set[x] = true end
+    for _, x in ipairs(b) do
+        if set[x] then n = n + 1 end
+    end
+    return n
+end
+
+local function Union(into, names)
+    local set, changed = {}, false
+    for _, x in ipairs(into) do set[x] = true end
+    for _, x in ipairs(names) do
+        if not set[x] then
+            table.insert(into, x)
+            set[x] = true
+            changed = true
+        end
+    end
+    if changed then table.sort(into) end
+    return changed
+end
+
+local function FindRun(runs, run)
+    for i = #runs, 1, -1 do
+        local r = runs[i]
+        if r.id == run.id and run.at <= r.last + SAME_RUN and run.last >= r.at - SAME_RUN
+            and Overlap(r.members, run.members) >= 2 then
+            return r
+        end
+    end
+end
+
+-- the run of this dungeon around that time that has this member
+local function FindRunWith(runs, id, at, who)
+    for i = #runs, 1, -1 do
+        local r = runs[i]
+        if r.id == id and at >= r.at - SAME_RUN and at <= r.last + SAME_RUN and MemberNamed(r, who) then
+            return r
+        end
+    end
+end
+
+-- Adds a run, or merges it into the one already known. Returns the stored run, whether it is new,
+-- and whether anything about it changed.
+local function Record(runs, run)
+    Dirty()
+    local r = FindRun(runs, run)
+    if not r then
+        r = { at = run.at, last = run.last, id = run.id, zone = run.zone, members = {}, deaths = {}, loot = {} }
+        Union(r.members, run.members)
+        table.insert(runs, r)
+        return r, true, true
+    end
+    local changed = Union(r.members, run.members)
+    if run.at < r.at then r.at = run.at end
+    if run.last > r.last then r.last = run.last end
+    return r, false, changed
+end
+
+-- Deaths and loot keep the highest count anyone saw.
+local function SetDeaths(r, who, n)
+    r.deaths = r.deaths or {}
+    if n > (r.deaths[who] or 0) then
+        r.deaths[who] = n
+        Dirty()
+    end
+end
+
+local function SetLoot(r, who, itemID, n, quality)
+    r.loot = r.loot or {}
+    local key = who .. "|" .. itemID
+    local e = r.loot[key]
+    if not e then
+        e = { who = who, id = itemID, q = quality, n = 0 }
+        r.loot[key] = e
+    end
+    if n > e.n then
+        e.n = n
+        Dirty()
+    end
+end
+
+---------------------------------------------------------------------------------------------------
+-- Passing it on to the guild
+
+local function TrySend(msg)
+    if not (C_ChatInfo and C_ChatInfo.SendAddonMessage) or not IsInGuild() then return true end
+    local restricted = C_ChatInfo.AreOutgoingAddonChatMessagesRestricted
+    if restricted then
+        local ok, yes = pcall(restricted)
+        if ok and yes then return false end
+    end
+    local ok, res = pcall(C_ChatInfo.SendAddonMessage, PREFIX, msg, "GUILD")
+    if not ok or res == false then return false end
+    -- newer clients answer with a result code
+    local success = Enum and Enum.SendAddonMessageResult and Enum.SendAddonMessageResult.Success or 0
+    if type(res) == "number" and res ~= success then return false end
+    return true
+end
+
+local function Queue(msg)
+    if not B.Opt("share") then return end
+    local _, g = Runs()
+    if not g then return end
+    for _, m in ipairs(g.outbox) do
+        if m == msg then return end
+    end
+    table.insert(g.outbox, msg)
+end
+
+local blockedUntil = 0
+local function SendOne()
+    if GetTime() < blockedUntil then return end
+    local _, g = Runs()
+    if not g or not g.outbox[1] then return end
+    if TrySend(g.outbox[1]) then
+        table.remove(g.outbox, 1)
+    else
+        blockedUntil = GetTime() + RETRY
+    end
+end
+
+local function RunMsg(r)
+    return table.concat({ "R", r.at, r.last, r.id or 0, r.zone or "?", table.concat(r.members, ",") }, "\t")
+end
+
+local function DeathMsg(r, who)
+    return table.concat({ "X", r.at, r.id or 0, who, r.deaths[who] or 0 }, "\t")
+end
+
+local function LootMsg(r, e)
+    return table.concat({ "L", r.at, r.id or 0, e.who, e.id, e.n, e.q }, "\t")
+end
+
+local function Receive(msg)
+    local runs = Runs()
+    if not runs then return end
+    local f = { strsplit("\t", msg) }
+    if f[1] == "R" then
+        local at, last, id = tonumber(f[2]), tonumber(f[3]), tonumber(f[4])
+        if not at or not last or not f[6] then return end
+        local members = { strsplit(",", f[6]) }
+        if #members < 2 then return end
+        table.sort(members)
+        Record(runs, { at = at, last = last, id = id, zone = f[5], members = members })
+    elseif f[1] == "X" or f[1] == "L" then
+        local at, id = tonumber(f[2]), tonumber(f[3])
+        local r = at and f[4] and FindRunWith(runs, id, at, f[4])
+        if not r then return end -- that run's message never came
+        local who = MemberNamed(r, f[4])
+        if f[1] == "X" then
+            local n = tonumber(f[5])
+            if n then SetDeaths(r, who, n) end
+        else
+            local itemID, n, q = tonumber(f[5]), tonumber(f[6]), tonumber(f[7])
+            if itemID and n and q then SetLoot(r, who, itemID, n, q) end
+        end
+    else
+        return
+    end
+    B.Refresh()
+end
+
+---------------------------------------------------------------------------------------------------
+-- The run you're in
+
+local current           -- the stored run you're in (kept after you step out, until another starts)
+local inside = false    -- whether you're in its dungeon right now
+local seenDeaths, seenLoot, wasDead = {}, {}, {}
+
+local function SetCurrent(r)
+    if r == current then return end
+    current = r
+    seenDeaths, seenLoot, wasDead = {}, {}, {}
+    if r then
+        for who, n in pairs(r.deaths or {}) do seenDeaths[who] = n end
+        for key, e in pairs(r.loot or {}) do seenLoot[key] = e.n end
+    end
+end
+
+local function Ordinal(n)
+    local last2, last = n % 100, n % 10
+    if last2 >= 11 and last2 <= 13 then return n .. "th" end
+    return n .. (last == 1 and "st" or last == 2 and "nd" or last == 3 and "rd" or "th")
+end
+
+local function RunsTogether(runs, a, b)
+    local n = 0
+    for _, r in ipairs(runs) do
+        local hasA, hasB = false, false
+        for _, x in ipairs(r.members) do
+            if x == a then hasA = true elseif x == b then hasB = true end
+        end
+        if hasA and hasB then n = n + 1 end
+    end
+    return n
+end
+
+local function Check()
+    local isInside, kind = IsInInstance()
+    inside = isInside and kind == "party"
+    if not inside then return end
+    local runs = Runs()
+    if not runs then return end
+    local members = GuildmatesInGroup()
+    if #members < 2 then return end
+    local zone, _, _, _, _, _, _, instanceID = GetInstanceInfo()
+    local now = Now()
+    local r, new, changed = Record(runs, { at = now, last = now, id = instanceID, zone = zone, members = members })
+    SetCurrent(r)
+    if changed then Queue(RunMsg(r)) end
+    if new and B.Opt("chatRuns") then
+        local me = FullName("player")
+        local others, buddy = {}, nil
+        for _, x in ipairs(r.members) do
+            if x ~= me then
+                table.insert(others, B.ShortName(x))
+                buddy = buddy or x
+            end
+        end
+        B.Say(zone .. " with " .. table.concat(others, ", ") .. " - run logged. That's your "
+            .. Ordinal(RunsTogether(runs, me, buddy)) .. " run with " .. B.ShortName(buddy) .. ".")
+    end
+    B.Refresh()
+end
+
+-- Every second while you're in a run: who went from alive to dead. Someone seen for the first time
+-- (a ghost coming back in after a wipe, say) only sets where they stand.
+local function WatchDeaths()
+    if not current or not inside then return end
+    for _, unit in ipairs(UNITS) do
+        local name = UnitExists(unit) and FullName(unit)
+        if name and MemberNamed(current, name) == name then
+            local dead = UnitIsDeadOrGhost(unit) and true or false
+            if dead and wasDead[name] == false then
+                seenDeaths[name] = (seenDeaths[name] or 0) + 1
+                SetDeaths(current, name, seenDeaths[name])
+                Queue(DeathMsg(current, name))
+                if B.Opt("chatDeaths") then
+                    B.Say(Pick(DEATH_QUIPS):format(B.ShortName(name)) .. " ("
+                        .. Ordinal(current.deaths[name]) .. " death this run)")
+                end
+                B.Refresh()
+            end
+            wasDead[name] = dead
+        end
+    end
+end
+
+---------------------------------------------------------------------------------------------------
+-- Loot
+
+-- the game's "%s receives loot: %s." as a pattern: "^(.+) receives loot: (.+)%.$"
+local function ToPattern(fmt)
+    if type(fmt) ~= "string" then return nil end
+    local p = fmt:gsub("[%(%)%.%+%-%*%?%[%]%^%$]", "%%%0")
+    p = p:gsub("%%s", "(.+)")
+    p = p:gsub("%%d", "(%%d+)")
+    return "^" .. p .. "$"
+end
+
+local lootPatterns
+local function LootPatterns()
+    if lootPatterns then return lootPatterns end
+    lootPatterns = {}
+    -- the ones with a count first: the plain ones would match them too
+    for _, spec in ipairs({
+        { LOOT_ITEM_MULTIPLE, false }, { LOOT_ITEM, false },
+        { LOOT_ITEM_SELF_MULTIPLE, true }, { LOOT_ITEM_SELF, true },
+    }) do
+        local p = ToPattern(spec[1])
+        if p then table.insert(lootPatterns, { p, spec[2] }) end
+    end
+    return lootPatterns
+end
+
+-- who, item link, how many
+local function ParseLoot(text)
+    for _, l in ipairs(LootPatterns()) do
+        local a, b, c = text:match(l[1])
+        if a then
+            if l[2] then return FullName("player"), a, tonumber(b) or 1 end
+            return a, b, tonumber(c) or 1
+        end
+    end
+end
+
+local QUALITY_COLORS = { ["0070dd"] = 3, a335ee = 4, ff8000 = 5, e6cc80 = 6 }
+
+local function Quality(link)
+    local _, _, q = GetItemInfo(link)
+    if q then return q end
+    local color = link:match("|c%x%x(%x%x%x%x%x%x)")
+    return color and QUALITY_COLORS[color:lower()]
+end
+
+local function OnLoot(text)
+    if not current or not inside or type(text) ~= "string" then return end
+    local who, link, count = ParseLoot(text)
+    if not who then return end
+    local member = MemberNamed(current, who)
+    local itemID = tonumber(link:match("item:(%d+)"))
+    if not member or not itemID then return end
+    local q = Quality(link)
+    if not q or q < MIN_LOOT_QUALITY then return end
+    local key = member .. "|" .. itemID
+    seenLoot[key] = (seenLoot[key] or 0) + count
+    SetLoot(current, member, itemID, seenLoot[key], q)
+    Queue(LootMsg(current, current.loot[key]))
+    if q >= EPIC and B.Opt("chatLoot") then
+        if member == FullName("player") then
+            B.Say(Pick(SELF_LOOT_QUIPS):format(link))
+        else
+            B.Say(Pick(ENVY_QUIPS):format(B.ShortName(member), link))
+        end
+    end
+    B.Refresh()
+end
+
+---------------------------------------------------------------------------------------------------
+-- Events
+
+local checkPending = false
+local function CheckSoon()
+    if checkPending then return end
+    checkPending = true
+    C_Timer.After(3, function()
+        checkPending = false
+        Check()
+    end)
+end
+
+local itemRefreshPending = false
+local function RefreshForItems()
+    if itemRefreshPending then return end
+    itemRefreshPending = true
+    C_Timer.After(1, function()
+        itemRefreshPending = false
+        Dirty()
+        B.Refresh()
+    end)
+end
+
+local frame = CreateFrame("Frame")
+for _, event in ipairs({ "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "GROUP_ROSTER_UPDATE",
+                         "ZONE_CHANGED_NEW_AREA", "CHAT_MSG_ADDON", "CHAT_MSG_LOOT",
+                         "GET_ITEM_INFO_RECEIVED" }) do
+    pcall(frame.RegisterEvent, frame, event)
+end
+
+frame:SetScript("OnEvent", function(_, event, a1, a2)
+    if event == "CHAT_MSG_ADDON" then
+        if a1 == PREFIX then Receive(a2) end
+    elseif event == "CHAT_MSG_LOOT" then
+        pcall(OnLoot, a1) -- newer clients may hide chat text from addons in instances
+    elseif event == "GET_ITEM_INFO_RECEIVED" then
+        RefreshForItems()
+    elseif event == "PLAYER_LOGIN" then
+        if C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix then
+            pcall(C_ChatInfo.RegisterAddonMessagePrefix, PREFIX)
+        end
+        C_Timer.NewTicker(1, function()
+            pcall(WatchDeaths)
+            SendOne()
+        end)
+        C_Timer.NewTicker(60, function()
+            if current and inside then current.last = Now() end -- still in the dungeon
+        end)
+    else
+        CheckSoon()
+    end
+end)
+
+---------------------------------------------------------------------------------------------------
+-- Who runs with whom, who dies, who gets the loot
+
+local function Top(counts)
+    local best, n
+    for k, v in pairs(counts) do
+        if not n or v > n or (v == n and k < best) then best, n = k, v end
+    end
+    return best, n or 0
+end
+
+local function ItemLevel(itemID)
+    local _, _, _, level = GetItemInfo(itemID)
+    return level or 0
+end
+
+-- the person with the most of field (at least min)
+local function Most(list, field, min)
+    local best
+    for _, p in ipairs(list) do
+        if p[field] >= (min or 1) and (not best or p[field] > best[field]) then best = p end
+    end
+    return best
+end
+
+-- hours: only runs this recent (nil: all)
+function D.Stats(hours)
+    local key = hours or "all"
+    if statsCache[key] then return statsCache[key][1], statsCache[key][2] end
+    local runs = Runs() or {}
+    local since = hours and (Now() - hours * 3600)
+    local people, zones, total = {}, {}, 0
+    for _, r in ipairs(runs) do
+        if not since or r.at >= since then
+            total = total + 1
+            zones[r.zone] = (zones[r.zone] or 0) + 1
+            for _, a in ipairs(r.members) do
+                local p = people[a]
+                if not p then
+                    p = { name = a, runs = 0, buddies = {}, zones = {}, deaths = 0, epics = 0, rares = 0 }
+                    people[a] = p
+                end
+                p.runs = p.runs + 1
+                p.zones[r.zone] = (p.zones[r.zone] or 0) + 1
+                for _, b in ipairs(r.members) do
+                    if b ~= a then p.buddies[b] = (p.buddies[b] or 0) + 1 end
+                end
+            end
+            for who, n in pairs(r.deaths or {}) do
+                if people[who] then people[who].deaths = people[who].deaths + n end
+            end
+            for _, e in pairs(r.loot or {}) do
+                local p = people[e.who]
+                if p then
+                    if e.q >= EPIC then p.epics = p.epics + e.n else p.rares = p.rares + e.n end
+                    if not p.best or e.q > p.bestQ or (e.q == p.bestQ and ItemLevel(e.id) > ItemLevel(p.best)) then
+                        p.best, p.bestQ = e.id, e.q
+                    end
+                end
+            end
+        end
+    end
+    local list, duo = {}, nil
+    for _, p in pairs(people) do
+        p.buddy, p.buddyRuns = Top(p.buddies)
+        p.zone, p.zoneRuns = Top(p.zones)
+        p.drops = p.epics + p.rares
+        p.buddyCount = 0
+        for _ in pairs(p.buddies) do p.buddyCount = p.buddyCount + 1 end
+        if p.buddy and (not duo or p.buddyRuns > duo.runs) then
+            duo = { a = p.name, b = p.buddy, runs = p.buddyRuns }
+        end
+        table.insert(list, p)
+    end
+    table.sort(list, function(x, y)
+        if x.runs ~= y.runs then return x.runs > y.runs end
+        return x.name < y.name
+    end)
+    local zone, zoneRuns = Top(zones)
+    local sum = {
+        total = total, duo = duo, zone = zone, zoneRuns = zoneRuns,
+        inspector = Most(list, "deaths", 3),
+        luckiest = Most(list, "epics", 1),
+        goblin = Most(list, "drops", 1),
+    }
+    statsCache[key] = { list, sum }
+    return list, sum
+end
+
+local function Title(p, list, sum)
+    local duo = sum.duo
+    if p == list[1] and p.runs >= 3 then return "|cffffd700Lives in Dungeons|r" end
+    if p == sum.inspector then return "|cffaaaaaaFloor Inspector|r" end
+    if duo and duo.runs >= 3 and (p.name == duo.a or p.name == duo.b) then return "|cffff8800Ride or Die|r" end
+    if p.runs >= 5 and p.deaths == 0 then return "Unkillable" end
+    if p.buddyCount >= 8 then return "Social Butterfly" end
+    if p.runs >= 3 and p.buddyCount == 1 then return "One-Friend Wonder" end
+    if p.zoneRuns >= 5 and p.zoneRuns * 2 >= p.runs then return "Regular at " .. p.zone end
+    if p.runs == 1 then return "Dungeon Tourist" end
+    return "Reliable Dungeon Buddy"
+end
+
+local function LootTitle(p, sum)
+    if p == sum.luckiest then return "|cffa335eeLuckiest Biggus|r" end
+    if p == sum.goblin then return "|cff0070ddLoot Goblin|r" end
+    if p.runs >= 5 and p.drops == 0 then return "|cffaaaaaaCursed by RNG|r" end
+    if p.drops == 0 then return "Still Waiting" end
+    return "Fair Share"
+end
+
+local function ItemText(itemID)
+    local _, link = GetItemInfo(itemID)
+    if link then return link end
+    if C_Item and C_Item.RequestLoadItemDataByID then C_Item.RequestLoadItemDataByID(itemID) end
+    return "item " .. itemID
+end
+
+D.Columns = {
+    { title = "#", width = 22, justify = "RIGHT" },
+    { title = "Name", width = 120 },
+    { title = "Runs", width = 40, justify = "RIGHT" },
+    { title = "Deaths", width = 46, justify = "RIGHT" },
+    { title = "Best buddy", width = 110 },
+    { title = "Favorite dungeon", width = 124 },
+    { title = "Title", width = 140 },
+}
+
+function D.Rows(hours)
+    local list, sum = D.Stats(hours)
+    local rows = {}
+    for i, p in ipairs(list) do
+        rows[i] = {
+            i .. ".",
+            B.ShortName(p.name),
+            p.runs,
+            p.deaths,
+            p.buddy and (B.ShortName(p.buddy) .. " (" .. p.buddyRuns .. ")") or "-",
+            p.zone and (p.zone .. " (" .. p.zoneRuns .. ")") or "-",
+            Title(p, list, sum),
+        }
+    end
+    return rows
+end
+
+D.LootColumns = {
+    { title = "#", width = 22, justify = "RIGHT" },
+    { title = "Name", width = 120 },
+    { title = "Epics", width = 40, justify = "RIGHT" },
+    { title = "Rares", width = 40, justify = "RIGHT" },
+    { title = "Runs", width = 40, justify = "RIGHT" },
+    { title = "Best drop", width = 210 },
+    { title = "Title", width = 130 },
+}
+
+function D.LootRows(hours)
+    local list, sum = D.Stats(hours)
+    local sorted = {}
+    for i, p in ipairs(list) do sorted[i] = p end
+    table.sort(sorted, function(x, y)
+        if x.epics ~= y.epics then return x.epics > y.epics end
+        if x.rares ~= y.rares then return x.rares > y.rares end
+        return x.name < y.name
+    end)
+    local rows = {}
+    for i, p in ipairs(sorted) do
+        rows[i] = {
+            i .. ".",
+            B.ShortName(p.name),
+            p.epics,
+            p.rares,
+            p.runs,
+            p.best and ItemText(p.best) or "-",
+            LootTitle(p, sum),
+        }
+    end
+    return rows
+end
+
+function D.Info()
+    local runs, g = Runs()
+    if not runs then return "You're not in a guild." end
+    local waiting = #g.outbox > 0 and (" · " .. #g.outbox .. " messages waiting to go to the guild") or ""
+    return #runs .. " runs with guild members logged" .. waiting
+end
+
+function D.Highlight(hours)
+    local _, sum = D.Stats(hours)
+    if not sum.duo then return "No runs with guild members yet. Group up!" end
+    return "Ride or Die: " .. B.ShortName(sum.duo.a) .. " & " .. B.ShortName(sum.duo.b) .. ", "
+        .. sum.duo.runs .. " runs together"
+end
+
+function D.LootHighlight(hours)
+    local _, sum = D.Stats(hours)
+    local p = sum.luckiest
+    if not p then return "No epic drops logged yet. The RNG gods are watching." end
+    return "Luckiest Biggus: " .. B.ShortName(p.name) .. ", " .. p.epics .. " epics"
+end
+
+function D.Report(hours, label)
+    local list, sum = D.Stats(hours)
+    if #list == 0 then
+        B.Say("no dungeon runs to report for " .. label:lower() .. ".")
+        return
+    end
+    local lines = { "Biggus dungeon report, " .. label:lower() .. ": " .. sum.total .. " runs together" }
+    local top = list[1]
+    table.insert(lines, "{triangle} Lives in Dungeons: " .. B.ShortName(top.name) .. " (" .. top.runs .. " runs)")
+    if sum.duo then
+        table.insert(lines, "{moon} Ride or Die: " .. B.ShortName(sum.duo.a) .. " & " .. B.ShortName(sum.duo.b)
+            .. " (" .. sum.duo.runs .. " runs together)")
+    end
+    if sum.inspector then
+        table.insert(lines, "{cross} Floor Inspector: " .. B.ShortName(sum.inspector.name)
+            .. " (" .. sum.inspector.deaths .. " deaths)")
+    end
+    if sum.zone then
+        table.insert(lines, "{square} Guild favorite: " .. sum.zone .. " (" .. sum.zoneRuns .. " runs)")
+    end
+    B.SendLines(lines)
+end
+
+function D.LootReport(hours, label)
+    local list, sum = D.Stats(hours)
+    if not sum.goblin then
+        B.Say("no rare or epic drops to report for " .. label:lower() .. ".")
+        return
+    end
+    local lines = { "Biggus loot envy report, " .. label:lower() .. ":" }
+    local lucky = sum.luckiest
+    if lucky then
+        local _, link = GetItemInfo(lucky.best)
+        table.insert(lines, "{star} Luckiest Biggus: " .. B.ShortName(lucky.name) .. " (" .. lucky.epics
+            .. " epics" .. (link and (", best: " .. link) or "") .. ")")
+    end
+    if sum.goblin ~= lucky then
+        table.insert(lines, "{diamond} Loot Goblin: " .. B.ShortName(sum.goblin.name) .. " ("
+            .. sum.goblin.drops .. " rares and epics)")
+    end
+    local cursed
+    for _, p in ipairs(list) do
+        if p.drops == 0 and p.runs >= 3 and (not cursed or p.runs > cursed.runs) then cursed = p end
+    end
+    if cursed then
+        table.insert(lines, "{skull} Cursed by RNG: " .. B.ShortName(cursed.name) .. " (" .. cursed.runs
+            .. " runs, nothing to show for it)")
+    end
+    B.SendLines(lines)
+end
+
+-- for tooltips: a guild member's dungeon stats (all time), their title, and their runs with you
+function D.For(name)
+    local list, sum = D.Stats(nil)
+    local short = B.ShortName(name)
+    for _, p in ipairs(list) do
+        if B.ShortName(p.name) == short then
+            local me = FullName("player")
+            return p, Title(p, list, sum), LootTitle(p, sum), (me and p.buddies[me]) or 0
+        end
+    end
+end

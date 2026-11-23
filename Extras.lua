@@ -1,0 +1,196 @@
+-- Biggus extras: the minimap button, the lines on guild members' tooltips, and the settings window.
+
+local ADDON, B = ...
+
+local OPTIONS = {
+    { key = "chatBank", label = "Comment in chat when the guild bank log is read" },
+    { key = "chatRuns", label = "Say when a dungeon run with guild members is logged" },
+    { key = "chatDeaths", label = "Make fun of deaths in dungeon runs" },
+    { key = "chatLoot", label = "Envy other people's epic drops" },
+    { key = "share", label = "Share runs, deaths and loot with guild members who have Biggus" },
+    { key = "minimap", label = "Show the minimap button" },
+    { key = "tooltip", label = "Show Biggus info on guild members' tooltips" },
+}
+
+---------------------------------------------------------------------------------------------------
+-- Minimap button: left-click opens Biggus, right-click the settings, drag moves it around the map
+
+local button
+
+local function PlaceButton()
+    local angle = math.rad(BiggusDB.minimapAngle or 200)
+    local radius = Minimap:GetWidth() / 2 + 6
+    button:ClearAllPoints()
+    button:SetPoint("CENTER", Minimap, "CENTER", math.cos(angle) * radius, math.sin(angle) * radius)
+end
+
+local function FollowCursor()
+    local mx, my = Minimap:GetCenter()
+    local cx, cy = GetCursorPosition()
+    local scale = Minimap:GetEffectiveScale()
+    local atan2 = math.atan2 or math.atan
+    BiggusDB.minimapAngle = math.deg(atan2(cy / scale - my, cx / scale - mx))
+    PlaceButton()
+end
+
+local function MakeButton()
+    button = CreateFrame("Button", "BiggusMinimapButton", Minimap)
+    button:SetSize(31, 31)
+    button:SetFrameStrata("MEDIUM")
+    button:SetFrameLevel(8)
+    button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    button:RegisterForDrag("LeftButton")
+    button:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+
+    local background = button:CreateTexture(nil, "BACKGROUND")
+    background:SetSize(20, 20)
+    background:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
+    background:SetPoint("TOPLEFT", 7, -5)
+
+    local icon = button:CreateTexture(nil, "ARTWORK")
+    icon:SetSize(17, 17)
+    icon:SetTexture("Interface\\Icons\\INV_Misc_Coin_02")
+    icon:SetPoint("TOPLEFT", 7, -6)
+
+    local border = button:CreateTexture(nil, "OVERLAY")
+    border:SetSize(53, 53)
+    border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+    border:SetPoint("TOPLEFT")
+
+    button:SetScript("OnClick", function(_, mouse)
+        if mouse == "RightButton" then B.OpenSettings() else B.Toggle("bank") end
+    end)
+    button:SetScript("OnDragStart", function(self) self:SetScript("OnUpdate", FollowCursor) end)
+    button:SetScript("OnDragStop", function(self) self:SetScript("OnUpdate", nil) end)
+    button:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:AddLine("|cffffd700Biggus|r")
+        local goal = B.GoalLine()
+        if goal then GameTooltip:AddLine(goal, 1, 1, 1) end
+        GameTooltip:AddLine("Left-click: open · Right-click: settings · Drag: move", 0.6, 0.6, 0.6)
+        GameTooltip:Show()
+    end)
+    button:SetScript("OnLeave", GameTooltip_Hide)
+    PlaceButton()
+end
+
+local function UpdateMinimapButton()
+    if B.Opt("minimap") then
+        if not button then MakeButton() end
+        button:Show()
+    elseif button then
+        button:Hide()
+    end
+end
+
+---------------------------------------------------------------------------------------------------
+-- Tooltips: a guild member's Biggus titles and numbers
+
+local function AddLines(tooltip)
+    if not B.Opt("tooltip") then return end
+    local _, unit = tooltip:GetUnit()
+    if not unit or not UnitIsPlayer(unit) or not UnitIsInMyGuild(unit) then return end
+    local name = UnitName(unit)
+    if not name then return end
+    local bank, bankTitle = B.BankFor(name)
+    local runs, runTitle, lootTitle, withYou = B.Dungeons.For(name)
+    if not bank and not runs then return end
+    tooltip:AddLine("|cffffd700Biggus|r")
+    if bank then
+        tooltip:AddLine("Bank: " .. bankTitle .. " (" .. B.Colored(bank.net) .. ")", 1, 1, 1)
+    end
+    if runs then
+        local together = (withYou > 0 and not UnitIsUnit(unit, "player")) and (", " .. withYou .. " with you") or ""
+        tooltip:AddLine("Dungeons: " .. runTitle .. " (" .. runs.runs .. " runs" .. together .. ", "
+            .. runs.deaths .. " deaths)", 1, 1, 1)
+        if runs.drops > 0 then
+            tooltip:AddLine("Loot: " .. lootTitle .. " (" .. runs.epics .. " epics, " .. runs.rares .. " rares)", 1, 1, 1)
+        end
+    end
+    tooltip:Show() -- resize to fit the new lines
+end
+
+local function HookTooltips()
+    local function OnUnit(tooltip)
+        if tooltip == GameTooltip then pcall(AddLines, tooltip) end
+    end
+    if TooltipDataProcessor and TooltipDataProcessor.AddTooltipPostCall and Enum and Enum.TooltipDataType then
+        TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Unit, OnUnit)
+    else
+        GameTooltip:HookScript("OnTooltipSetUnit", OnUnit)
+    end
+end
+
+---------------------------------------------------------------------------------------------------
+-- Settings window
+
+local settings
+
+local function MakeSettings()
+    settings = CreateFrame("Frame", "BiggusSettingsFrame", UIParent, "BasicFrameTemplateWithInset")
+    settings:SetSize(470, 56 + #OPTIONS * 30)
+    settings:SetFrameStrata("FULLSCREEN_DIALOG") -- above the main window
+    settings:SetClampedToScreen(true)
+
+    -- a solid background: some UI skins make the template's own see-through
+    local background = settings:CreateTexture(nil, "BACKGROUND", nil, -8)
+    background:SetPoint("TOPLEFT", 4, -24)
+    background:SetPoint("BOTTOMRIGHT", -4, 4)
+    background:SetColorTexture(0.06, 0.06, 0.08, 0.97)
+    settings:SetMovable(true)
+    settings:EnableMouse(true)
+    settings:RegisterForDrag("LeftButton")
+    settings:SetScript("OnDragStart", settings.StartMoving)
+    settings:SetScript("OnDragStop", settings.StopMovingOrSizing)
+    tinsert(UISpecialFrames, "BiggusSettingsFrame") -- Escape closes it
+
+    local title = settings:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    title:SetPoint("TOP", 0, -5)
+    title:SetText("|cffffd700Biggus|r settings")
+
+    settings.boxes = {}
+    for i, option in ipairs(OPTIONS) do
+        local box = CreateFrame("CheckButton", nil, settings, "UICheckButtonTemplate")
+        box:SetSize(26, 26)
+        box:SetPoint("TOPLEFT", 16, -34 - (i - 1) * 30)
+        local label = settings:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        label:SetPoint("LEFT", box, "RIGHT", 4, 0)
+        label:SetText(option.label)
+        box:SetScript("OnClick", function(self)
+            B.SetOpt(option.key, self:GetChecked() and true or false)
+            if option.key == "minimap" then UpdateMinimapButton() end
+        end)
+        settings.boxes[option.key] = box
+    end
+
+    settings:SetScript("OnShow", function()
+        for key, box in pairs(settings.boxes) do box:SetChecked(B.Opt(key)) end
+    end)
+    settings:Hide()
+end
+
+function B.OpenSettings()
+    if not settings then MakeSettings() end
+    if settings:IsShown() then
+        settings:Hide()
+        return
+    end
+    -- beside the main window when it's open, so they don't cover each other
+    settings:ClearAllPoints()
+    local main = _G.BiggusFrame
+    if main and main:IsShown() then
+        settings:SetPoint("TOPLEFT", main, "TOPRIGHT", 4, 0)
+    else
+        settings:SetPoint("CENTER")
+    end
+    settings:Show()
+end
+
+---------------------------------------------------------------------------------------------------
+
+local frame = CreateFrame("Frame")
+frame:RegisterEvent("PLAYER_LOGIN")
+frame:SetScript("OnEvent", function()
+    UpdateMinimapButton()
+    HookTooltips()
+end)
