@@ -1,12 +1,13 @@
 ## Interface: 16001
 ## Title: |cffffd700Biggus|r
-## Notes: Guild fun for Biggus: who feeds the guild bank and who raids it, the savings goal, who runs dungeons with whom, who dies the most and who gets the loot. /biggus
+## Notes: Guild fun for Biggus: who feeds the guild bank and who raids it, the savings goal, who runs dungeons with whom, who dies the most, who gets the loot, and which enemy players are Most Wanted. /biggus
 ## Author: Biggus
-## Version: 0.4.2
+## Version: 0.5.0
 ## SavedVariables: BiggusDB
 ## IconTexture: Interface\Icons\INV_Misc_Coin_02
 
 Biggus.lua
 Dungeons.lua
+Wanted.lua
 Sync.lua
 Extras.lua

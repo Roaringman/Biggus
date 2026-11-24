@@ -7,9 +7,10 @@ local OPTIONS = {
     { key = "chatRuns", label = "Say when a dungeon run with guild members is logged" },
     { key = "chatDeaths", label = "Make fun of deaths in dungeon runs" },
     { key = "chatLoot", label = "Envy other people's epic drops" },
-    { key = "share", label = "Share bank, runs, deaths and loot with guild members who have Biggus" },
+    { key = "chatWanted", label = "Announce ganks and warn when I target someone Most Wanted" },
+    { key = "share", label = "Share bank, runs, deaths, loot and kills with guild members who have Biggus" },
     { key = "minimap", label = "Show the minimap button" },
-    { key = "tooltip", label = "Show Biggus info on guild members' tooltips" },
+    { key = "tooltip", label = "Show Biggus info on tooltips (guild members, and Most Wanted enemies)" },
 }
 
 ---------------------------------------------------------------------------------------------------
@@ -89,9 +90,21 @@ end
 local function AddLines(tooltip)
     if not B.Opt("tooltip") then return end
     local _, unit = tooltip:GetUnit()
-    if not unit or not UnitIsPlayer(unit) or not UnitIsInMyGuild(unit) then return end
-    local name = UnitName(unit)
+    if not unit or not UnitIsPlayer(unit) then return end
+    local name = B.UnitName(unit) -- the full "First Last" name: UnitName gives only the first part on Forever
     if not name then return end
+    if not UnitIsInMyGuild(unit) then
+        -- an enemy-faction player: on the Most Wanted list?
+        local faction, mine = UnitFactionGroup(unit), UnitFactionGroup("player")
+        if not faction or faction == mine or faction == "Neutral" then return end
+        local p, place, title, victims = B.Wanted.For(name)
+        if not p then return end
+        tooltip:AddLine("|cffff4444Biggus Most Wanted #" .. place .. "|r - " .. title)
+        tooltip:AddLine("Killed " .. victims .. " (" .. p.kills .. (p.kills == 1 and " kill" or " kills")
+            .. "), last in " .. (p.lastZone or p.zone or "?") .. " " .. B.Ago(B.Now() - p.last), 1, 0.6, 0.6, true)
+        tooltip:Show()
+        return
+    end
     local bank, bankTitle = B.BankFor(name)
     local runs, runTitle, lootTitle, withYou = B.Dungeons.For(name)
     if not bank and not runs then return end

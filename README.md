@@ -19,7 +19,9 @@ A World of Warcraft addon for the **Biggus** guild on WoW Forever. It keeps scor
 
 **Loot envy.** Rare and epic drops in runs with guild members. Titles: *Luckiest Biggus*, *Loot Goblin*, *Cursed by RNG*.
 
-**Sharing.** The bank history, the bank's gold, the savings goal, and runs, deaths and loot are shared between the guild's Biggus users by hidden whispers (Forever refuses addon messages in the guild channel). When two copies meet, each sends the other everything it learned since they last met, so members who were offline catch up too. Nobody without Biggus sees any of it.
+**Most Wanted.** When a guildie with Biggus is killed by an enemy-faction player outside battlegrounds and arenas, their copy reads the death recap and records the killer, the zone and subzone. The Most Wanted tab ranks killers (*Public Enemy #1*, *Has a Vendetta*, *Serial Ganker*, *Picks On Lowbies*), with the Enemy's Favourite Snack and the Danger Zone. Hovering an enemy player shows on their tooltip if they're on the list, and targeting one prints a warning.
+
+**Sharing.** The bank history, the bank's gold, the savings goal, runs, deaths, loot and kills are shared between the guild's Biggus users by hidden whispers (Forever refuses addon messages in the guild channel). When two copies meet, each sends the other everything it learned since they last met, so members who were offline catch up too. Nobody without Biggus sees any of it.
 
 Also: a minimap button, Biggus lines on guild members' tooltips, and a settings window.
 
@@ -27,17 +29,18 @@ Also: a minimap button, Biggus lines on guild members' tooltips, and a settings 
 
 | Command | What it does |
 |---|---|
-| `/biggus` | Open the window (Bank, Dungeons and Loot tabs) |
-| `/biggus dungeons`, `/biggus loot` | Open a specific tab |
+| `/biggus` | Open the window (Bank, Dungeons, Loot and Most Wanted tabs) |
+| `/biggus dungeons`, `/biggus loot`, `/biggus wanted` | Open a specific tab |
 | `/biggus report` | Post the bank highlights to guild chat |
-| `/biggus report dungeons`, `/biggus report loot` | Post the dungeon or loot highlights |
+| `/biggus report dungeons`, `/biggus report loot`, `/biggus report wanted` | Post the dungeon, loot or Most Wanted highlights |
+| `/biggus deathcheck` | Show what the game's death recap gave for your last death (to check Most Wanted works) |
 | `/biggus goal 5000 New tabard` | Save for your own goal (5000g) instead of the next bank tab |
 | `/biggus goal` | Back to saving for the next bank tab |
 | `/biggus settings` | Turn chat comments, sharing, the minimap button and tooltips on or off |
 | `/biggus sync` | Check sharing: which guild members have Biggus, what's waiting to be sent, the last error |
 | `/biggus sync now` | Say hello to every guild member online again (to find new Biggus users right away) |
 | `/biggus block Name`, `/biggus unblock Name` | Ignore a player's Biggus messages, or stop ignoring them |
-| `/biggus forget Name` | Drop everything a player reported (bank entries, runs, deaths, loot, gold, goal) |
+| `/biggus forget Name` | Drop everything a player reported (bank entries, runs, deaths, loot, gold, goal, kills) |
 | `/biggus reset` | Forget the bank history |
 | `/biggus help` | List the commands |
 

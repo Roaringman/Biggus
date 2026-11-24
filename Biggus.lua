@@ -660,9 +660,19 @@ local VIEWS = {
         highlight = function() return B.Dungeons.LootHighlight(RANGES[rangeIndex].hours) end,
         report = function() B.Dungeons.LootReport(RANGES[rangeIndex].hours, RANGES[rangeIndex].label) end,
     },
+    wanted = {
+        title = "Most Wanted: enemy players who killed a guildie",
+        empty = "Nobody yet. When a guildie with Biggus is killed by an enemy player, the killer lands here.",
+        foot = "From the death recaps of guildies with Biggus. Battlegrounds and arenas don't count.",
+        columns = function() return B.Wanted.Columns end,
+        rows = function() return B.Wanted.Rows(RANGES[rangeIndex].hours) end,
+        info = function() return B.Wanted.Info() end,
+        highlight = function() return B.Wanted.Highlight(RANGES[rangeIndex].hours) end,
+        report = function() B.Wanted.Report(RANGES[rangeIndex].hours, RANGES[rangeIndex].label) end,
+    },
 }
-local VIEW_ORDER = { "bank", "dungeons", "loot" }
-local VIEW_LABELS = { bank = "Bank", dungeons = "Dungeons", loot = "Loot" }
+local VIEW_ORDER = { "bank", "dungeons", "loot", "wanted" }
+local VIEW_LABELS = { bank = "Bank", dungeons = "Dungeons", loot = "Loot", wanted = "Most Wanted" }
 local viewName = "bank"
 
 local function Columns(view)
@@ -913,6 +923,8 @@ function B.Colored(copper)
     return Colored(copper)
 end
 
+B.Ago = Ago
+
 ---------------------------------------------------------------------------------------------------
 -- Events
 
@@ -1044,8 +1056,10 @@ SlashCmdList.BIGGUS = function(msg)
     elseif cmd == "report" then
         local which = VIEWS[rest:lower()] or VIEWS.bank
         which.report()
-    elseif cmd == "dungeons" or cmd == "loot" then
+    elseif cmd == "dungeons" or cmd == "loot" or cmd == "wanted" then
         Toggle(cmd)
+    elseif cmd == "deathcheck" then
+        B.Wanted.DeathCheck()
     elseif cmd == "settings" or cmd == "options" or cmd == "config" then
         B.OpenSettings()
     elseif cmd == "reset" then
@@ -1058,7 +1072,8 @@ SlashCmdList.BIGGUS = function(msg)
         end
     elseif cmd == "help" then
         Say("/biggus - bank leaderboard · /biggus dungeons - runs and deaths · /biggus loot - loot envy · "
-            .. "/biggus report (or report dungeons / report loot) - post to guild chat · /biggus goal 5000 Name - "
+            .. "/biggus wanted - enemy players who killed guildies · /biggus deathcheck - what your last death "
+            .. "recap gave · /biggus report (or report dungeons / loot / wanted) - post to guild chat · /biggus goal 5000 Name - "
             .. "set a savings goal (/biggus goal alone: back to the next bank tab) · /biggus settings · "
             .. "/biggus sync - is sharing working? (/biggus sync now: say hello to everyone again) · "
             .. "/biggus block Name / unblock Name - ignore a player's messages · /biggus forget Name - "

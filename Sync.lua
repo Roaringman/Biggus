@@ -16,7 +16,7 @@
 -- prefixes ("lanes") at once: three messages a second, live ones before catch-up.
 --
 -- Messages: "H" / "HA" hello and its answer: kind, protocol, Biggus version. Bank (B, M, G):
--- Biggus.lua. Runs (R, X, L): Dungeons.lua.
+-- Biggus.lua. Runs (R, X, L): Dungeons.lua. Kills by enemy players (K): Wanted.lua.
 
 local ADDON, B = ...
 local S = {}
@@ -171,6 +171,7 @@ local function CatchUp(name)
     local since, now = (peer.lastSync or 0) - MARGIN, B.Now()
     local msgs = B.BankCatchUp(since, MaySeeItems(name))
     for _, msg in ipairs(B.Dungeons.CatchUp(since)) do table.insert(msgs, msg) end
+    for _, msg in ipairs(B.Wanted.CatchUp(since)) do table.insert(msgs, msg) end
     local last
     for _, msg in ipairs(msgs) do last = Push(bulk, to, msg) end
     -- it counts as caught up once the last message has gone (not when you log off before that)
@@ -261,6 +262,8 @@ local function Receive(prefix, text, sender)
         B.Dungeons.Receive(f, from)
     elseif kind == "B" or kind == "M" or kind == "G" then
         B.BankReceive(f, from, ranks[from])
+    elseif kind == "K" then
+        B.Wanted.Receive(f, from)
     end
 end
 
@@ -338,8 +341,8 @@ function S.Trust(cmd, arg)
         g.blocked[name] = nil
         B.Say(name .. " is no longer blocked.")
     else
-        local n = B.ForgetBank(name) + B.Dungeons.Forget(name)
-        B.Say("dropped " .. n .. " things " .. name .. " reported (bank entries, runs, deaths, loot, gold, goal).")
+        local n = B.ForgetBank(name) + B.Dungeons.Forget(name) + B.Wanted.Forget(name)
+        B.Say("dropped " .. n .. " things " .. name .. " reported (bank entries, runs, deaths, loot, gold, goal, kills).")
     end
     B.Refresh()
 end
