@@ -231,13 +231,12 @@ local function LootMsg(r, e)
 end
 
 -- Everything this copy learned about runs after `since` (server time): each run, then its deaths and
--- loot. Only runs you were in yourself: a run is passed on by the people who were there, never by
--- hearsay (see D.Receive).
+-- loot. That includes runs you only heard about from someone else, so a run keeps spreading from copy
+-- to copy after the people who were in it log off.
 function D.CatchUp(since)
     local msgs = {}
-    local me = FullName("player")
     for _, r in ipairs(Runs() or {}) do
-        if (r.u or 0) > since and MemberNamed(r, me) == me then
+        if (r.u or 0) > since then
             table.insert(msgs, RunMsg(r))
             for who in pairs(r.deaths or {}) do table.insert(msgs, DeathMsg(r, who)) end
             for _, e in pairs(r.loot or {}) do table.insert(msgs, LootMsg(r, e)) end
@@ -253,8 +252,9 @@ local MAX_DEATHS = 25          -- per person per run
 local MAX_LOOT = 5             -- of one item, per person per run
 local MAX_QUALITY = 7
 
--- f: a message's fields; from: who sent it. A player may only report runs they were in, and only
--- deaths and loot of the people in those runs - so nobody can make up runs of others.
+-- f: a message's fields; from: who sent it. Runs are passed on second-hand too (the guild trusts each
+-- other), so the sender doesn't have to be in the run. Deaths and loot must still be of the people in
+-- the run, and the first reporter of each run is kept (r.src) for /biggus forget.
 function D.Receive(f, from)
     local runs = Runs()
     if not runs or not from then return end
@@ -265,16 +265,15 @@ function D.Receive(f, from)
             or type(f[6]) ~= "string" then
             return
         end
-        local members, seen, sender = {}, {}, false
+        local members, seen = {}, {}
         for _, x in ipairs({ strsplit(",", f[6]) }) do
             local name = B.CleanName(x)
             if name and not seen[name] then
                 seen[name] = true
                 table.insert(members, name)
-                if name == from then sender = true end
             end
         end
-        if #members < 2 or #members > MAX_MEMBERS or not sender then return end
+        if #members < 2 or #members > MAX_MEMBERS then return end
         table.sort(members)
         local run = { at = at, last = last, id = id, zone = zone, members = members }
         local existing = FindRun(runs, run)
@@ -291,7 +290,7 @@ function D.Receive(f, from)
     elseif f[1] == "X" or f[1] == "L" then
         local at, id, who = B.Time(f[2]), B.Num(f[3], 0, 10000000), B.CleanName(f[4])
         local r = at and id and who and FindRunWith(runs, id, at, who)
-        if not r or MemberNamed(r, from) ~= from then return end -- unknown run, or the sender wasn't in it
+        if not r then return end -- that run's message hasn't come yet
         who = MemberNamed(r, who)
         if f[1] == "X" then
             local n = B.Num(f[5], 1, MAX_DEATHS)
