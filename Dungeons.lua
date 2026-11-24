@@ -233,10 +233,10 @@ end
 -- Everything this copy learned about runs after `since` (server time): each run, then its deaths and
 -- loot. That includes runs you only heard about from someone else, so a run keeps spreading from copy
 -- to copy after the people who were in it log off.
-function D.CatchUp(since)
+function D.CatchUp(since, oldest)
     local msgs = {}
     for _, r in ipairs(Runs() or {}) do
-        if (r.u or 0) > since then
+        if (r.u or 0) > since and r.last >= (oldest or 0) then
             table.insert(msgs, RunMsg(r))
             for who in pairs(r.deaths or {}) do table.insert(msgs, DeathMsg(r, who)) end
             for _, e in pairs(r.loot or {}) do table.insert(msgs, LootMsg(r, e)) end
@@ -392,6 +392,8 @@ local function Check()
     local members = GuildmatesInGroup()
     if #members < 2 then return end
     local zone, _, _, _, _, _, _, instanceID = GetInstanceInfo()
+    zone, instanceID = B.Text(B.Plain(zone), 60), B.Plain(instanceID)
+    if not zone or not instanceID then return end -- hidden right now (a fight): tried again on the next event
     local now = Now()
     local r, new, changed = Record(runs, { at = now, last = now, id = instanceID, zone = zone, members = members })
     SetCurrent(r)
@@ -418,8 +420,12 @@ local function WatchDeaths()
     for _, unit in ipairs(UNITS) do
         local name = UnitExists(unit) and FullName(unit)
         if name and MemberNamed(current, name) == name then
-            local dead = UnitIsDeadOrGhost(unit) and true or false
-            if dead and wasDead[name] == false then
+            local raw = UnitIsDeadOrGhost(unit)
+            local dead
+            if not (issecretvalue and issecretvalue(raw)) then dead = raw and true or false end
+            if dead == nil then
+                -- hidden from addons right now: skip this unit until the game shows it again
+            elseif dead and wasDead[name] == false then
                 seenDeaths[name] = (seenDeaths[name] or 0) + 1
                 SetDeaths(current, name, seenDeaths[name])
                 Queue(DeathMsg(current, name))
@@ -429,7 +435,7 @@ local function WatchDeaths()
                 end
                 B.Refresh()
             end
-            wasDead[name] = dead
+            if dead ~= nil then wasDead[name] = dead and true or false end
         end
     end
 end
@@ -482,6 +488,7 @@ local function Quality(link)
 end
 
 local function OnLoot(text)
+    text = B.Plain(text)
     if not current or not inside or type(text) ~= "string" then return end
     local who, link, count = ParseLoot(text)
     if not who then return end

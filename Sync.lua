@@ -12,19 +12,23 @@
 --  * Live: what happens while you play (a new run, a death, a drop, a bank visit) goes straight to
 --    every known Biggus user online.
 -- Duplicates are harmless: every message is merged so that getting it twice changes nothing.
--- The game lets each message prefix send about one message a second, so Biggus sends on three
--- prefixes ("lanes") at once: three messages a second, live ones before catch-up.
+-- Blizzard's add-on policy says add-ons must not burden the realms (excessive use of the chat system),
+-- so Biggus sends at most one message a second on a single prefix - the rate the game itself allows
+-- a prefix - live ones before catch-up, waits while the game restricts addon messages (in instances,
+-- in fights), and a first catch-up covers only the last 30 days.
 --
 -- Messages: "H" / "HA" hello and its answer: kind, protocol, Biggus version. Bank (B, M, G):
--- Biggus.lua. Runs (R, X, L): Dungeons.lua. Kills by enemy players (K): Wanted.lua.
+-- Biggus.lua. Runs (R, X, L): Dungeons.lua. Kills by enemy players (K) and revenge (V): Wanted.lua.
 
 local ADDON, B = ...
 local S = {}
 B.Sync = S
 
-local PREFIXES = { "BIGGUS", "BIGGUS2", "BIGGUS3" }
+local PREFIX = "BIGGUS"         -- what this copy sends on
+local PREFIXES = { "BIGGUS", "BIGGUS2", "BIGGUS3" } -- what it reads (Biggus 0.4-0.6 also sent on 2 and 3)
 local PROTO = "2"
 local MARGIN = 2 * 3600         -- a catch-up starts this long before the last one, to be safe
+local FIRST_SYNC_DAYS = 30      -- what a first catch-up with someone covers
 local PROBE_EVERY = 24 * 3600   -- guild members not known to have Biggus are asked at most this often
 local FAIL_PAUSE = 5            -- seconds to stop sending after a refused message
 local MAX_TRIES = 3
@@ -32,7 +36,7 @@ local MAX_TRIES = 3
 local GetMetadata = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
 local VERSION = (GetMetadata and GetMetadata(ADDON, "Version")) or "?"
 
-local RATE_LIMIT = 200          -- messages one player may send in a minute (3 lanes x 60 = 180 at most)
+local RATE_LIMIT = 200          -- messages one player may send in a minute (older copies sent up to 180)
 
 local live, bulk = {}, {}       -- waiting messages: { to = whisper target, msg = text, tries = n }
 local online = {}               -- name -> whisper target: guild members online now
@@ -101,38 +105,95 @@ end
 ---------------------------------------------------------------------------------------------------
 -- Sending
 
+-- The game's answers to SendAddonMessage (Enum.SendAddonMessageResult; numbers as documented for 12.0)
+local RESULT = Enum and Enum.SendAddonMessageResult or {}
+local SUCCESS = RESULT.Success or 0
+local WAIT_CODES = { -- not the message's fault: wait and send it again later, without counting a try
+    [RESULT.AddonMessageThrottle or 3] = "throttled by the game",
+    [RESULT.ChannelThrottle or 8] = "throttled by the game",
+    [RESULT.AddOnMessageLockdown or 11] = "addon messages locked down right now",
+}
+local OFFLINE = RESULT.TargetOffline or 12
+
+-- Text a player typed themselves (the savings goal's name) goes as a logged message, as Blizzard asks
+-- for user-written content, so it can be reported and reviewed like chat. Those use "~" between fields
+-- (logged messages must be plain printable text).
+local function IsTyped(msg)
+    return msg:sub(1, 2) == "G~"
+end
+
+-- sent?, why not, and what to do: "wait", "offline" or "retry"
 local function SendNow(prefix, item)
-    if not (C_ChatInfo and C_ChatInfo.SendAddonMessage) then return false, "no addon message API" end
+    if not (C_ChatInfo and C_ChatInfo.SendAddonMessage) then return false, "no addon message API", "retry" end
     whisperedAt[item.to] = GetTime()
-    local ok, res = pcall(C_ChatInfo.SendAddonMessage, prefix, item.msg, "WHISPER", item.to)
-    if not ok then return false, tostring(res) end
-    if res == false then return false, "refused" end
-    -- newer clients answer with a result code: Success (0) is "sent"
-    local success = Enum and Enum.SendAddonMessageResult and Enum.SendAddonMessageResult.Success or 0
-    if type(res) == "number" and res ~= success then return false, "result code " .. res end
+    local send = (IsTyped(item.msg) and C_ChatInfo.SendAddonMessageLogged) or C_ChatInfo.SendAddonMessage
+    local ok, res = pcall(send, prefix, item.msg, "WHISPER", item.to)
+    if not ok then return false, tostring(res), "retry" end
+    if res == false then return false, "refused", "retry" end
+    if type(res) == "number" and res ~= SUCCESS then
+        if WAIT_CODES[res] then return false, WAIT_CODES[res], "wait" end
+        if res == OFFLINE then return false, "not online", "offline" end
+        return false, "result code " .. res, "retry"
+    end
     return true
 end
 
--- every second: up to one message per lane
-local function Tick()
-    if GetTime() < pausedUntil then return end
-    for _, prefix in ipairs(PREFIXES) do
-        local queue = live[1] and live or bulk
-        local item = table.remove(queue, 1)
-        if not item then return end
-        local ok, err = SendNow(prefix, item)
-        if ok then
-            counts.sent = counts.sent + 1
-            if item.syncDone then item.syncDone() end -- the last message of a catch-up went out
-        else
-            counts.failed = counts.failed + 1
-            lastError = err .. " (to " .. item.to .. ")"
-            item.tries = item.tries + 1
-            if item.tries < MAX_TRIES then table.insert(queue, item) end
-            pausedUntil = GetTime() + FAIL_PAUSE
-            return
+-- Trial and veteran-trial accounts may not send addon messages on Forever (since 1.60.1)
+local function TrialAccount()
+    for _, check in ipairs({ IsTrialAccount, IsVeteranTrialAccount }) do
+        if check then
+            local ok, yes = pcall(check)
+            if ok and yes == true then return true end
         end
     end
+    return false
+end
+
+-- a game flag, read safely: true, false, or nil when the client doesn't have it
+local function Flag(check)
+    if not check then return nil end
+    local ok, yes = pcall(check)
+    if not ok then return nil end
+    return yes == true
+end
+
+-- Whether the game is holding addon messages back right now (the documented chat lockdown, in
+-- instances and fights): nothing is sent then. Only InChatMessagingLockdown counts here.
+-- AreOutgoingAddonChatMessagesRestricted is on all the time on Forever's live realms and is about chat
+-- channels - hidden whispers still get through (seen in the game, and by ForeverTrading) - so it must
+-- not stop whispers. Whatever the flags say, the game's own answer decides: a send it refuses with
+-- "locked down" makes Biggus wait (WAIT_CODES), so nothing goes out that the game doesn't allow.
+local function Restricted()
+    return Flag(C_ChatInfo and C_ChatInfo.InChatMessagingLockdown) == true
+end
+
+-- every second: at most one message
+local function Tick()
+    if GetTime() < pausedUntil or Restricted() or TrialAccount() then return end
+    local queue = live[1] and live or bulk
+    local item = table.remove(queue, 1)
+    if not item then return end
+    local ok, err, what = SendNow(PREFIX, item)
+    if ok then
+        counts.sent = counts.sent + 1
+        if item.syncDone then item.syncDone() end -- the last message of a catch-up went out
+        return
+    end
+    lastError = err .. " (to " .. item.to .. ")"
+    if what == "wait" then
+        table.insert(queue, 1, item) -- same message again, once the game lets it through
+    elseif what == "offline" then
+        local name = B.Canon(item.to)
+        if name then online[name], helloed[name] = nil, nil end
+        for i = #queue, 1, -1 do -- the rest for them waits for the next catch-up
+            if queue[i].to == item.to then table.remove(queue, i) end
+        end
+    else
+        counts.failed = counts.failed + 1
+        item.tries = item.tries + 1
+        if item.tries < MAX_TRIES then table.insert(queue, item) end
+    end
+    pausedUntil = GetTime() + FAIL_PAUSE
 end
 
 -- a live message to every known Biggus user online (itemTab: only those who may see item-tab history)
@@ -169,9 +230,12 @@ local function CatchUp(name)
     if not peer or not to then return end
     caughtUp[name] = GetTime()
     local since, now = (peer.lastSync or 0) - MARGIN, B.Now()
-    local msgs = B.BankCatchUp(since, MaySeeItems(name))
-    for _, msg in ipairs(B.Dungeons.CatchUp(since)) do table.insert(msgs, msg) end
-    for _, msg in ipairs(B.Wanted.CatchUp(since)) do table.insert(msgs, msg) end
+    -- the first time: only the last FIRST_SYNC_DAYS, so meeting a new copy doesn't mean thousands of messages
+    local oldest = (not peer.lastSync) and (now - FIRST_SYNC_DAYS * 86400) or 0
+    local msgs = B.BankCatchUp(since, MaySeeItems(name), oldest)
+    for _, msg in ipairs(B.Dungeons.CatchUp(since, oldest)) do table.insert(msgs, msg) end
+    for _, msg in ipairs(B.Wanted.CatchUp(since, oldest)) do table.insert(msgs, msg) end
+    for _, msg in ipairs(B.Wanted.RevengeCatchUp(since, oldest)) do table.insert(msgs, msg) end
     local last
     for _, msg in ipairs(msgs) do last = Push(bulk, to, msg) end
     -- it counts as caught up once the last message has gone (not when you log off before that)
@@ -235,6 +299,8 @@ local function Allowed(g, from)
 end
 
 local function Receive(prefix, text, sender)
+    -- during a chat lockdown the game can hand these over as secret values: skipped
+    prefix, text, sender = B.Plain(prefix), B.Plain(text), B.Plain(sender)
     if not IsOurs(prefix) or type(text) ~= "string" or type(sender) ~= "string" then return end
     local from = B.CleanName(sender)
     if not from or from == Me() then return end
@@ -252,7 +318,7 @@ local function Receive(prefix, text, sender)
     peer.seen = B.Now()
     online[from] = online[from] or peer.target
 
-    local f = { strsplit("\t", text) }
+    local f = { strsplit(IsTyped(text) and "~" or "\t", text) }
     local kind = f[1]
     if kind == "H" or kind == "HA" then
         peer.version = B.Text(f[3], 12)
@@ -264,6 +330,8 @@ local function Receive(prefix, text, sender)
         B.BankReceive(f, from, ranks[from])
     elseif kind == "K" then
         B.Wanted.Receive(f, from)
+    elseif kind == "V" then
+        B.Wanted.ReceiveRevenge(f, from)
     end
 end
 
@@ -277,6 +345,7 @@ local function HideNotFound(_, _, msg)
         local fmt = ERR_CHAT_PLAYER_NOT_FOUND_S or "No player named '%s' is currently playing."
         notFoundPattern = "^" .. fmt:gsub("[%(%)%.%+%-%*%?%[%]%^%$]", "%%%0"):gsub("%%s", "(.+)") .. "$"
     end
+    msg = B.Plain(msg)
     local target = type(msg) == "string" and msg:match(notFoundPattern)
     if target and whisperedAt[target] and GetTime() - whisperedAt[target] < 10 then
         local name = B.Canon(target)
@@ -307,6 +376,7 @@ end
 -- one line for the window
 function S.Status()
     if not B.Opt("share") then return "sharing is off" end
+    if TrialAccount() then return "trial accounts can't send addon messages" end
     local waiting = #live + #bulk
     return OnlinePeers() .. " Biggus users online" .. (waiting > 0 and (" · " .. waiting .. " messages to send") or "")
 end
@@ -342,7 +412,7 @@ function S.Trust(cmd, arg)
         B.Say(name .. " is no longer blocked.")
     else
         local n = B.ForgetBank(name) + B.Dungeons.Forget(name) + B.Wanted.Forget(name)
-        B.Say("dropped " .. n .. " things " .. name .. " reported (bank entries, runs, deaths, loot, gold, goal, kills).")
+        B.Say("dropped " .. n .. " things " .. name .. " reported (bank entries, runs, deaths, loot, gold, goal, kills, revenge).")
     end
     B.Refresh()
 end
@@ -380,6 +450,16 @@ function S.Command(arg)
         .. (lastFrom and (" · last from " .. lastFrom) or ""))
     B.Say("last error: " .. (lastError or "none") .. " · refused this session (not from the guild, blocked or "
         .. "flooding): " .. rejected)
+    if TrialAccount() then
+        B.Say("|cffff4444this is a trial account|r: Blizzard doesn't let trial accounts send addon messages, so "
+            .. "your copy only receives.")
+    elseif Restricted() then
+        B.Say("the game is holding addon messages back right now (instance or fight); sending resumes after.")
+    end
+    local function Show(v) return v == nil and "n/a" or tostring(v) end
+    B.Say("game flags: chat lockdown " .. Show(Flag(C_ChatInfo and C_ChatInfo.InChatMessagingLockdown))
+        .. " · outgoing addon chat restricted " .. Show(Flag(C_ChatInfo and C_ChatInfo.AreOutgoingAddonChatMessagesRestricted))
+        .. " (whispers ignore the second)")
     local blocked = {}
     for name in pairs(g.blocked) do table.insert(blocked, name) end
     if #blocked > 0 then
@@ -401,12 +481,12 @@ local function ScanSoon()
 end
 
 local frame = CreateFrame("Frame")
-for _, event in ipairs({ "PLAYER_LOGIN", "CHAT_MSG_ADDON", "GUILD_ROSTER_UPDATE" }) do
+for _, event in ipairs({ "PLAYER_LOGIN", "CHAT_MSG_ADDON", "CHAT_MSG_ADDON_LOGGED", "GUILD_ROSTER_UPDATE" }) do
     pcall(frame.RegisterEvent, frame, event)
 end
 
 frame:SetScript("OnEvent", function(_, event, a1, a2, _, a4)
-    if event == "CHAT_MSG_ADDON" then
+    if event == "CHAT_MSG_ADDON" or event == "CHAT_MSG_ADDON_LOGGED" then
         Receive(a1, a2, a4) -- prefix, text, channel, sender
     elseif event == "GUILD_ROSTER_UPDATE" then
         ScanSoon()
