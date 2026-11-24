@@ -37,6 +37,6 @@ Biggus keeps score in your guild, with a sense of humour. Everything it shows co
 
 **Commands.** `/biggus` opens the window (Bank, Dungeons, Loot, Most Wanted and Avengers). `/biggus report` posts the highlights to guild chat, only when you ask. `/biggus settings` turns each feature on or off. `/biggus help` lists the rest.
 
-**Rules.** Biggus keeps to Blizzard's add-on policy and WoW Forever's restrictions: no combat log, no automation, at most one addon message a second, and it waits whenever the game locks addon messages down. Details are in SECURITY.md in the source repository.
+**Rules.** Biggus keeps to Blizzard's add-on policy and WoW Forever's restrictions: no combat log, no automation, at most one addon message a second, and it waits whenever the game locks addon messages down.
 
 Biggus was written with the help of an AI coding assistant, and its code is original. Source: https://github.com/Roaringman/Biggus

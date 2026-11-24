@@ -53,7 +53,7 @@ Also: a minimap button, Biggus lines on guild members' tooltips, and a settings 
 - Chat comments only show in your own chat window. Only the **Report** button and `/biggus report` post to guild chat.
 - The bank is only read while someone with Biggus has it open; what they read reaches everyone else's copy.
 - A goal set with `/biggus goal` is shared when the guild master or an officer sets it: the newest one wins.
-- Shared data is checked, limited and traceable; see [SECURITY.md](SECURITY.md) for what Biggus does against faked data and leaks, and what it can't prevent.
+- Shared data is checked, limited and traceable: only guild members are heard, every value is range-checked, and `/biggus block` and `/biggus forget` remove a player's data.
 - Net bank value counts items at vendor price, since addons can't see auction prices.
 - Everyone needs Biggus 0.4 or newer for sharing: 0.3 used the guild channel, which Forever refuses.
 
