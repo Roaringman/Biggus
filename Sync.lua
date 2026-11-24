@@ -18,7 +18,7 @@
 -- in fights), and a first catch-up covers only the last 30 days.
 --
 -- Messages: "H" / "HA" hello and its answer: kind, protocol, Biggus version. Bank (B, M, G):
--- Biggus.lua. Runs (R, X, L): Dungeons.lua. Kills by enemy players (K) and revenge (V): Wanted.lua.
+-- Biggus.lua. Runs (R, X, L, W): Dungeons.lua. Kills by enemy players (K) and revenge (V): Wanted.lua.
 
 local ADDON, B = ...
 local S = {}
@@ -324,7 +324,7 @@ local function Receive(prefix, text, sender)
         peer.version = B.Text(f[3], 12)
         if kind == "H" then Hello(from, true) end
         CatchUp(from)
-    elseif kind == "R" or kind == "X" or kind == "L" then
+    elseif kind == "R" or kind == "X" or kind == "L" or kind == "W" then
         B.Dungeons.Receive(f, from)
     elseif kind == "B" or kind == "M" or kind == "G" then
         B.BankReceive(f, from, ranks[from])

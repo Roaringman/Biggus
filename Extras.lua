@@ -6,7 +6,7 @@ local OPTIONS = {
     { key = "chatBank", label = "Comment in chat when the guild bank log is read" },
     { key = "chatRuns", label = "Say when a dungeon run with guild members is logged" },
     { key = "chatDeaths", label = "Make fun of deaths in dungeon runs" },
-    { key = "chatLoot", label = "Envy other people's epic drops" },
+    { key = "chatLoot", label = "Announce blue and epic drops and roll wins in guild runs" },
     { key = "wanted", label = "Track Most Wanted and Avengers (enemy players who killed guildies)" },
     { key = "chatWanted", label = "Announce ganks and revenge, and warn when I target someone Most Wanted" },
     { key = "share", label = "Share bank, runs, deaths, loot, kills and revenge with guild members who have Biggus" },
@@ -122,8 +122,9 @@ local function AddLines(tooltip)
         local together = (withYou > 0 and not UnitIsUnit(unit, "player")) and (", " .. withYou .. " with you") or ""
         tooltip:AddLine("Dungeons: " .. runTitle .. " (" .. runs.runs .. " runs" .. together .. ", "
             .. runs.deaths .. " deaths)", 1, 1, 1)
-        if runs.drops > 0 then
-            tooltip:AddLine("Loot: " .. lootTitle .. " (" .. runs.epics .. " epics, " .. runs.rares .. " rares)", 1, 1, 1)
+        if runs.drops > 0 or runs.rollWins > 0 then
+            tooltip:AddLine("Loot: " .. lootTitle .. " (" .. runs.epics .. " epics, " .. runs.rares .. " blues, rolls won "
+                .. runs.needWins .. " Need / " .. runs.greedWins .. " Greed)", 1, 1, 1)
         end
     end
     tooltip:Show() -- resize to fit the new lines
