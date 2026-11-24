@@ -7,7 +7,7 @@ local OPTIONS = {
     { key = "chatRuns", label = "Say when a dungeon run with guild members is logged" },
     { key = "chatDeaths", label = "Make fun of deaths in dungeon runs" },
     { key = "chatLoot", label = "Envy other people's epic drops" },
-    { key = "share", label = "Share runs, deaths and loot with guild members who have Biggus" },
+    { key = "share", label = "Share bank, runs, deaths and loot with guild members who have Biggus" },
     { key = "minimap", label = "Show the minimap button" },
     { key = "tooltip", label = "Show Biggus info on guild members' tooltips" },
 }

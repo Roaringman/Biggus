@@ -10,8 +10,14 @@
 --  * /biggus opens the leaderboard, and "Report" (or /biggus report) posts the highlights to guild chat.
 --  * Savings goal: the bank's gold against the price of the next bank tab (or a goal you set with
 --    /biggus goal 5000 New tabard), shown as a progress bar, on every bank visit and in the report.
+--  * The bank history, the bank's gold and the goal are shared with other Biggus users (Sync.lua).
+--    Bank messages:
+--      B  entry: "B", kind, type, who, item ID, count, copper, tab, hour, how many identical entries
+--                came before it (so that two real identical deposits aren't taken for one)
+--      M  gold:  "M", copper in the bank, next tab's price, tabs owned, when it was seen
+--      G  goal:  "G", when it was set, copper (0: back to the next bank tab), name
 
-local ADDON, B = ... -- B: shared with the addon's other files (Dungeons.lua)
+local ADDON, B = ... -- B: shared with the addon's other files
 
 local MATCH_HOURS = 2          -- how far apart one entry's time may drift between two reads
 local BIG_WITHDRAWAL = 100000  -- 10g: big enough to get a comment
@@ -31,6 +37,7 @@ local RANGES = {
     { label = "All time" },
 }
 local rangeIndex = 1
+local bankCache, bankCacheAt = nil, 0 -- all-time bank stats for tooltips
 
 ---------------------------------------------------------------------------------------------------
 -- Helpers
@@ -51,8 +58,37 @@ local function Say(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cffffd700Biggus|r: " .. msg)
 end
 
+-- server time: players' clocks differ, and times are shared between them
+function B.Now()
+    return GetServerTime and GetServerTime() or time()
+end
+
 local function NowHour()
-    return math.floor(time() / 3600)
+    return math.floor(B.Now() / 3600)
+end
+
+-- Names. On Forever characters have two-part names ("Muliens Bubbleskull") and no realm names: the
+-- game hands the second part over where a realm would be ("Muliens-Bubbleskull"). Biggus keeps every
+-- name the way the bank log writes it, "Muliens Bubbleskull"; on a normal realm, "Name" or "Name-Realm".
+local function OwnRealm()
+    return (GetNormalizedRealmName and GetNormalizedRealmName()) or ""
+end
+
+function B.Canon(name)
+    if type(name) ~= "string" or name == "" then return nil end
+    name = name:gsub("%-$", "") -- an empty realm: "Name-"
+    local own = OwnRealm()
+    if own == "" then return (name:gsub("%-", " ")) end
+    if name:sub(-#own - 1) == "-" .. own then name = name:sub(1, -#own - 2) end
+    return name
+end
+
+-- a unit's name as Biggus keeps it
+function B.UnitName(unit)
+    local name, second = UnitFullName(unit)
+    if not name or name == UNKNOWNOBJECT then return nil end
+    if second and second ~= "" then return B.Canon(name .. "-" .. second) end
+    return name
 end
 
 local function HoursAgo(years, months, days, hours)
@@ -102,9 +138,10 @@ local function Guild()
     BiggusDB.guilds = BiggusDB.guilds or {}
     local g = BiggusDB.guilds[key]
     if not g then
-        g = { log = {} }
+        g = { log = {}, bankV2 = true }
         BiggusDB.guilds[key] = g
     end
+    if not g.bankV2 then B.MigrateBank(g) end
     return g, name
 end
 
@@ -172,7 +209,7 @@ local function ReadLogs()
             local kind, who, link, count, _, _, y, m, d, h = GetGuildBankTransaction(tab, i)
             if who and link and (kind == "deposit" or kind == "withdraw") then
                 table.insert(found, {
-                    kind = "item", type = kind, who = who, item = link, id = ItemID(link),
+                    kind = "item", type = kind, who = B.Canon(who), item = link, id = ItemID(link),
                     count = count or 1, tab = tab, hour = now - HoursAgo(y, m, d, h),
                 })
             end
@@ -183,7 +220,7 @@ local function ReadLogs()
             local kind, who, amount, y, m, d, h = GetGuildBankMoneyTransaction(i)
             if who and amount and (kind == "deposit" or kind == "withdraw" or kind == "repair") then
                 table.insert(found, {
-                    kind = "money", type = kind, who = who, money = amount, hour = now - HoursAgo(y, m, d, h),
+                    kind = "money", type = kind, who = B.Canon(who), money = amount, hour = now - HoursAgo(y, m, d, h),
                 })
             end
         end
@@ -217,13 +254,102 @@ local function Merge(found)
         if same then
             matched[same] = true
         else
+            e.u = B.Now() -- when this copy learned it: what a catch-up sends
             table.insert(g.log, e)
             table.insert(added, e)
         end
     end
     g.lastRead = time()
+    bankCache = nil
     return added
 end
+
+---------------------------------------------------------------------------------------------------
+-- Sharing the bank with other Biggus users (Sync.lua carries the messages)
+
+-- how many entries just like e (same signature, within the time window) come before it in the log
+local function Occurrence(g, e)
+    local sig, n = Signature(e), 0
+    for _, other in ipairs(g.log) do
+        if other == e then break end
+        if Signature(other) == sig and math.abs(other.hour - e.hour) <= MATCH_HOURS then n = n + 1 end
+    end
+    return n
+end
+
+local function BankMsg(g, e)
+    return table.concat({ "B", e.kind, e.type, e.who, e.id or 0, e.count or 0, e.money or 0, e.tab or 0,
+                          e.hour, Occurrence(g, e) }, "\t")
+end
+
+local function MoneyMsg(g)
+    return table.concat({ "M", g.bankMoney or 0, g.tabCost or 0, g.tabsOwned or 0, g.moneySeen or 0 }, "\t")
+end
+
+local function GoalMsg(g)
+    local goal = g.goal or {}
+    local name = (goal.name or ""):gsub("\t", " ")
+    return table.concat({ "G", g.goalAt or 0, goal.copper or 0, name }, "\t")
+end
+
+-- everything this copy learned after `since` (server time)
+function B.BankCatchUp(since)
+    local g = Guild()
+    local msgs = {}
+    if not g then return msgs end
+    for _, e in ipairs(g.log) do
+        if (e.u or 0) > since then table.insert(msgs, BankMsg(g, e)) end
+    end
+    if g.moneySeen and (g.moneyU or 0) > since then table.insert(msgs, MoneyMsg(g)) end
+    if g.goalAt and (g.goalU or 0) > since then table.insert(msgs, GoalMsg(g)) end
+    return msgs
+end
+
+function B.BankReceive(f)
+    local g = Guild()
+    if not g then return end
+    local now = B.Now()
+    if f[1] == "B" then
+        local e = {
+            kind = f[2], type = f[3], who = B.Canon(f[4]), id = tonumber(f[5]), count = tonumber(f[6]),
+            money = tonumber(f[7]), tab = tonumber(f[8]), hour = tonumber(f[9]),
+        }
+        local before = tonumber(f[10]) or 0
+        if (e.kind ~= "item" and e.kind ~= "money") or not e.who or not e.hour then return end
+        if e.kind == "money" then e.id, e.count, e.tab = nil, nil, nil else e.money = nil end
+        -- new unless this copy already has as many entries like it as the sender has up to it
+        local sig, have = Signature(e), 0
+        for _, other in ipairs(g.log) do
+            if Signature(other) == sig and math.abs(other.hour - e.hour) <= MATCH_HOURS then have = have + 1 end
+        end
+        if have > before then return end
+        e.u = now
+        table.insert(g.log, e)
+        bankCache = nil
+    elseif f[1] == "M" then
+        local seen = tonumber(f[5]) or 0
+        if seen <= (g.moneySeen or 0) then return end
+        g.bankMoney, g.tabCost, g.tabsOwned = tonumber(f[2]), tonumber(f[3]), tonumber(f[4])
+        g.moneySeen, g.moneyU = seen, now
+    elseif f[1] == "G" then
+        local at = tonumber(f[2]) or 0
+        if at <= (g.goalAt or 0) then return end
+        local copper = tonumber(f[3]) or 0
+        g.goal = copper > 0 and { copper = copper, name = f[4] ~= "" and f[4] or "Savings goal" } or nil
+        g.goalAt, g.goalU = at, now
+    end
+    B.Refresh()
+end
+
+-- old saved data: names the new way, and the gold and goal ready to share
+local function Migrate(g)
+    if g.bankV2 then return end
+    for _, e in ipairs(g.log) do e.who = B.Canon(e.who) or e.who end
+    if g.bankMoney and not g.moneySeen then g.moneySeen = g.lastRead or 1 end
+    if g.goal and not g.goalAt then g.goalAt = 1 end
+    g.bankV2 = true
+end
+B.MigrateBank = Migrate
 
 ---------------------------------------------------------------------------------------------------
 -- Who did what
@@ -249,7 +375,7 @@ local function Stats(hours)
                     if e.type == "repair" then p.repairs = p.repairs + 1 end
                 end
             else
-                local _, _, quality, _, _, _, _, _, _, _, sellPrice = GetItemInfo(e.item)
+                local _, _, quality, _, _, _, _, _, _, _, sellPrice = GetItemInfo(e.item or e.id)
                 local value = (sellPrice or 0) * e.count
                 if e.type == "deposit" then
                     p.itemsIn = p.itemsIn + e.count
@@ -629,7 +755,6 @@ end
 B.Toggle = Toggle
 
 -- for tooltips: a guild member's bank stats (all time) and title; computed at most every 10 seconds
-local bankCache, bankCacheAt = nil, 0
 function B.BankFor(name)
     if not bankCache or GetTime() - bankCacheAt > 10 then
         bankCache, bankCacheAt = Stats(nil), GetTime()
@@ -680,9 +805,14 @@ end
 local function ReadMoney()
     local g = Guild()
     if not g or not GetGuildBankMoney then return end
+    local before = table.concat({ g.bankMoney or "", g.tabCost or "", g.tabsOwned or "" }, "|")
     g.bankMoney = GetGuildBankMoney() or 0
     if GetGuildBankTabCost then g.tabCost = GetGuildBankTabCost() or 0 end
     if GetNumGuildBankTabs then g.tabsOwned = GetNumGuildBankTabs() end
+    g.moneySeen, g.moneyU = B.Now(), B.Now()
+    if table.concat({ g.bankMoney, g.tabCost or "", g.tabsOwned or "" }, "|") ~= before then
+        B.Sync.Broadcast(MoneyMsg(g))
+    end
     Refresh()
 end
 
@@ -691,7 +821,11 @@ local function ReadSoon()
     readPending = true
     C_Timer.After(1, function()
         readPending = false
-        for _, e in ipairs(Merge(ReadLogs())) do table.insert(newSinceOpen, e) end
+        local g = Guild()
+        for _, e in ipairs(Merge(ReadLogs())) do
+            table.insert(newSinceOpen, e)
+            if g then B.Sync.Broadcast(BankMsg(g, e)) end
+        end
         Refresh()
         if not announcePending then
             announcePending = true
@@ -751,12 +885,16 @@ SlashCmdList.BIGGUS = function(msg)
         local gold, name = rest:match("^(%d+)%s*(.*)$")
         if gold then
             g.goal = { copper = tonumber(gold) * 10000, name = name ~= "" and name or "Savings goal" }
-            Say("now saving for " .. g.goal.name .. ": " .. Money(g.goal.copper) .. ".")
+            Say("now saving for " .. g.goal.name .. ": " .. Money(g.goal.copper) .. ". Shared with the guild's Biggus users.")
         else
             g.goal = nil
-            Say("back to saving for the next bank tab.")
+            Say("back to saving for the next bank tab. Shared with the guild's Biggus users.")
         end
+        g.goalAt, g.goalU = B.Now(), B.Now()
+        B.Sync.Broadcast(GoalMsg(g))
         Refresh()
+    elseif cmd == "sync" then
+        B.Sync.Command(rest:lower())
     elseif cmd == "report" then
         local which = VIEWS[rest:lower()] or VIEWS.bank
         which.report()
@@ -776,6 +914,7 @@ SlashCmdList.BIGGUS = function(msg)
         Say("/biggus - bank leaderboard · /biggus dungeons - runs and deaths · /biggus loot - loot envy · "
             .. "/biggus report (or report dungeons / report loot) - post to guild chat · /biggus goal 5000 Name - "
             .. "set a savings goal (/biggus goal alone: back to the next bank tab) · /biggus settings · "
+            .. "/biggus sync - is sharing working? (/biggus sync now: say hello to everyone again) · "
             .. "/biggus reset - forget the bank history")
     else
         if not Supported() then

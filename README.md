@@ -19,7 +19,7 @@ A World of Warcraft addon for the **Biggus** guild on WoW Forever. It keeps scor
 
 **Loot envy.** Rare and epic drops in runs with guild members. Titles: *Luckiest Biggus*, *Loot Goblin*, *Cursed by RNG*.
 
-**Sharing.** Runs, deaths and loot are passed to other Biggus users in the guild through hidden addon messages, so everyone's copy counts the whole guild (for members who are online at the time).
+**Sharing.** The bank history, the bank's gold, the savings goal, and runs, deaths and loot are shared between the guild's Biggus users by hidden whispers (Forever refuses addon messages in the guild channel). When two copies meet, each sends the other everything it learned since they last met, so members who were offline catch up too. Nobody without Biggus sees any of it.
 
 Also: a minimap button, Biggus lines on guild members' tooltips, and a settings window.
 
@@ -34,6 +34,8 @@ Also: a minimap button, Biggus lines on guild members' tooltips, and a settings 
 | `/biggus goal 5000 New tabard` | Save for your own goal (5000g) instead of the next bank tab |
 | `/biggus goal` | Back to saving for the next bank tab |
 | `/biggus settings` | Turn chat comments, sharing, the minimap button and tooltips on or off |
+| `/biggus sync` | Check sharing: which guild members have Biggus, what's waiting to be sent, the last error |
+| `/biggus sync now` | Say hello to every guild member online again (to find new Biggus users right away) |
 | `/biggus reset` | Forget the bank history |
 | `/biggus help` | List the commands |
 
@@ -42,7 +44,7 @@ Also: a minimap button, Biggus lines on guild members' tooltips, and a settings 
 ## Good to know
 
 - Chat comments only show in your own chat window. Only the **Report** button and `/biggus report` post to guild chat.
-- The bank is only read while someone with Biggus has it open, and each copy keeps its own bank history.
-- A goal set with `/biggus goal` only applies to your own copy.
+- The bank is only read while someone with Biggus has it open; what they read reaches everyone else's copy.
+- A goal set with `/biggus goal` is shared too: the newest one wins.
 - Net bank value counts items at vendor price, since addons can't see auction prices.
-- Forever's live realms sometimes refuse addon messages; anything that couldn't be shared is retried every minute.
+- Everyone needs Biggus 0.4 or newer for sharing: 0.3 used the guild channel, which Forever refuses.
