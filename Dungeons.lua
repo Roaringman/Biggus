@@ -6,10 +6,9 @@
 --  * Deaths: while you're in a run, the guild members in it are watched; each one going from alive to
 --    dead counts a death in that run.
 --  * Loot: rare (blue) and better items a guild member in the run loots, read from the loot messages.
---  * All of it is passed on to the other Biggus users in the guild as hidden addon messages, so each
---    copy counts the whole guild, not only its owner - for the members online at the time. Forever's
---    live realms sometimes refuse addon messages: those wait and are tried again a minute later (also
---    after the next login). Messages go one a second, the rate the game allows.
+--  * All of it is passed on to the other Biggus users in the guild (Sync.lua carries the messages), so
+--    each copy counts the whole guild, not only its owner. Copies that were offline catch up the next
+--    time they meet one that has it.
 --  * Several group members with Biggus all report the same run, deaths and loot; it's recognised as
 --    the same (same dungeon, same time, same people), and deaths and loot take the highest count
 --    anyone saw rather than adding them up.
@@ -23,9 +22,7 @@ local ADDON, B = ...
 local D = {}
 B.Dungeons = D
 
-local PREFIX = "BIGGUS"
 local SAME_RUN = 3600       -- seconds: this close in time, same dungeon and same people = the same run
-local RETRY = 60            -- seconds to wait after a message was refused
 local MIN_LOOT_QUALITY = 3  -- rare (blue) and better
 local EPIC = 4
 local UNITS = { "player", "party1", "party2", "party3", "party4" }
@@ -50,20 +47,10 @@ local SELF_LOOT_QUIPS = {
     "You got %s. Try not to brag. (Brag a little.)",
 }
 
-local function Now()
-    return GetServerTime and GetServerTime() or time() -- server time: players' clocks differ
-end
+local Now = B.Now
 
 local function Pick(list)
     return list[math.random(#list)]
-end
-
-local function Runs()
-    local g = B.Guild()
-    if not g then return nil, nil end
-    g.runs = g.runs or {}
-    g.outbox = g.outbox or {}
-    return g.runs, g
 end
 
 local statsCache = {}
@@ -71,17 +58,39 @@ local function Dirty()
     statsCache = {}
 end
 
+-- Biggus 0.3 kept names as "Muliens-Bubbleskull" and had an outbox for the guild channel
+local function Migrate(g)
+    if g.runsV2 then return end
+    for _, r in ipairs(g.runs) do
+        for i, x in ipairs(r.members) do r.members[i] = B.Canon(x) or x end
+        table.sort(r.members)
+        local deaths = {}
+        for who, n in pairs(r.deaths or {}) do deaths[B.Canon(who) or who] = n end
+        r.deaths = deaths
+        local loot = {}
+        for _, e in pairs(r.loot or {}) do
+            e.who = B.Canon(e.who) or e.who
+            loot[e.who .. "|" .. e.id] = e
+        end
+        r.loot = loot
+    end
+    g.outbox = nil
+    g.runsV2 = true
+    Dirty()
+end
+
+local function Runs()
+    local g = B.Guild()
+    if not g then return nil, nil end
+    g.runs = g.runs or {}
+    Migrate(g)
+    return g.runs, g
+end
+
 ---------------------------------------------------------------------------------------------------
 -- Who's in the group
 
-local function FullName(unit)
-    local name, realm = UnitFullName(unit)
-    if not name or name == UNKNOWNOBJECT then return nil end
-    if not realm or realm == "" then
-        realm = (GetNormalizedRealmName and GetNormalizedRealmName()) or (GetRealmName():gsub("%s", ""))
-    end
-    return name .. "-" .. realm
-end
+local FullName = B.UnitName
 
 -- you and the guild members in your party
 local function GuildmatesInGroup()
@@ -101,6 +110,8 @@ end
 
 -- the run's member with this name (with or without the realm)
 local function MemberNamed(r, who)
+    who = B.Canon(who)
+    if not who then return nil end
     local short = B.ShortName(who)
     for _, x in ipairs(r.members) do
         if x == who or B.ShortName(x) == short then return x end
@@ -159,14 +170,16 @@ local function Record(runs, run)
     Dirty()
     local r = FindRun(runs, run)
     if not r then
-        r = { at = run.at, last = run.last, id = run.id, zone = run.zone, members = {}, deaths = {}, loot = {} }
+        r = { at = run.at, last = run.last, id = run.id, zone = run.zone, members = {}, deaths = {}, loot = {},
+              u = Now() } -- u: when this copy last learned something about it (what a catch-up sends)
         Union(r.members, run.members)
         table.insert(runs, r)
         return r, true, true
     end
     local changed = Union(r.members, run.members)
-    if run.at < r.at then r.at = run.at end
+    if run.at < r.at then r.at, changed = run.at, true end
     if run.last > r.last then r.last = run.last end
+    if changed then r.u = Now() end
     return r, false, changed
 end
 
@@ -175,6 +188,7 @@ local function SetDeaths(r, who, n)
     r.deaths = r.deaths or {}
     if n > (r.deaths[who] or 0) then
         r.deaths[who] = n
+        r.u = Now()
         Dirty()
     end
 end
@@ -189,48 +203,16 @@ local function SetLoot(r, who, itemID, n, quality)
     end
     if n > e.n then
         e.n = n
+        r.u = Now()
         Dirty()
     end
 end
 
 ---------------------------------------------------------------------------------------------------
--- Passing it on to the guild
-
-local function TrySend(msg)
-    if not (C_ChatInfo and C_ChatInfo.SendAddonMessage) or not IsInGuild() then return true end
-    local restricted = C_ChatInfo.AreOutgoingAddonChatMessagesRestricted
-    if restricted then
-        local ok, yes = pcall(restricted)
-        if ok and yes then return false end
-    end
-    local ok, res = pcall(C_ChatInfo.SendAddonMessage, PREFIX, msg, "GUILD")
-    if not ok or res == false then return false end
-    -- newer clients answer with a result code
-    local success = Enum and Enum.SendAddonMessageResult and Enum.SendAddonMessageResult.Success or 0
-    if type(res) == "number" and res ~= success then return false end
-    return true
-end
+-- Sharing with other Biggus users (Sync.lua carries the messages)
 
 local function Queue(msg)
-    if not B.Opt("share") then return end
-    local _, g = Runs()
-    if not g then return end
-    for _, m in ipairs(g.outbox) do
-        if m == msg then return end
-    end
-    table.insert(g.outbox, msg)
-end
-
-local blockedUntil = 0
-local function SendOne()
-    if GetTime() < blockedUntil then return end
-    local _, g = Runs()
-    if not g or not g.outbox[1] then return end
-    if TrySend(g.outbox[1]) then
-        table.remove(g.outbox, 1)
-    else
-        blockedUntil = GetTime() + RETRY
-    end
+    B.Sync.Broadcast(msg)
 end
 
 local function RunMsg(r)
@@ -245,14 +227,31 @@ local function LootMsg(r, e)
     return table.concat({ "L", r.at, r.id or 0, e.who, e.id, e.n, e.q }, "\t")
 end
 
-local function Receive(msg)
+-- everything this copy learned about runs after `since` (server time): each run, then its deaths and loot
+function D.CatchUp(since)
+    local msgs = {}
+    for _, r in ipairs(Runs() or {}) do
+        if (r.u or 0) > since then
+            table.insert(msgs, RunMsg(r))
+            for who in pairs(r.deaths or {}) do table.insert(msgs, DeathMsg(r, who)) end
+            for _, e in pairs(r.loot or {}) do table.insert(msgs, LootMsg(r, e)) end
+        end
+    end
+    return msgs
+end
+
+-- f: a message's fields
+function D.Receive(f)
     local runs = Runs()
     if not runs then return end
-    local f = { strsplit("\t", msg) }
     if f[1] == "R" then
         local at, last, id = tonumber(f[2]), tonumber(f[3]), tonumber(f[4])
         if not at or not last or not f[6] then return end
-        local members = { strsplit(",", f[6]) }
+        local members = {}
+        for _, x in ipairs({ strsplit(",", f[6]) }) do
+            local name = B.Canon(x)
+            if name then table.insert(members, name) end
+        end
         if #members < 2 then return end
         table.sort(members)
         Record(runs, { at = at, last = last, id = id, zone = f[5], members = members })
@@ -456,26 +455,18 @@ end
 
 local frame = CreateFrame("Frame")
 for _, event in ipairs({ "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "GROUP_ROSTER_UPDATE",
-                         "ZONE_CHANGED_NEW_AREA", "CHAT_MSG_ADDON", "CHAT_MSG_LOOT",
+                         "ZONE_CHANGED_NEW_AREA", "CHAT_MSG_LOOT",
                          "GET_ITEM_INFO_RECEIVED" }) do
     pcall(frame.RegisterEvent, frame, event)
 end
 
-frame:SetScript("OnEvent", function(_, event, a1, a2)
-    if event == "CHAT_MSG_ADDON" then
-        if a1 == PREFIX then Receive(a2) end
-    elseif event == "CHAT_MSG_LOOT" then
+frame:SetScript("OnEvent", function(_, event, a1)
+    if event == "CHAT_MSG_LOOT" then
         pcall(OnLoot, a1) -- newer clients may hide chat text from addons in instances
     elseif event == "GET_ITEM_INFO_RECEIVED" then
         RefreshForItems()
     elseif event == "PLAYER_LOGIN" then
-        if C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix then
-            pcall(C_ChatInfo.RegisterAddonMessagePrefix, PREFIX)
-        end
-        C_Timer.NewTicker(1, function()
-            pcall(WatchDeaths)
-            SendOne()
-        end)
+        C_Timer.NewTicker(1, function() pcall(WatchDeaths) end)
         C_Timer.NewTicker(60, function()
             if current and inside then current.last = Now() end -- still in the dungeon
         end)
@@ -663,10 +654,9 @@ function D.LootRows(hours)
 end
 
 function D.Info()
-    local runs, g = Runs()
+    local runs = Runs()
     if not runs then return "You're not in a guild." end
-    local waiting = #g.outbox > 0 and (" · " .. #g.outbox .. " messages waiting to go to the guild") or ""
-    return #runs .. " runs with guild members logged" .. waiting
+    return #runs .. " runs with guild members logged · " .. B.Sync.Status()
 end
 
 function D.Highlight(hours)
