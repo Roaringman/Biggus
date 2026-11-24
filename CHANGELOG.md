@@ -1,5 +1,9 @@
 # Biggus changelog
 
+## 1.0.0
+- First public release on CurseForge.
+- Guild chat reports and the *Luckiest* loot title use your own guild's name, so Biggus fits any guild.
+
 ## 0.7.0
 - **Roll wins**: the Loot tab counts each guildie's Need and Greed rolls won over other guildies (only rolls where at least one other guildie also rolled). New titles *Dice Lord* and *Needs Everything*, and a Dice Lord line in the loot report.
 - **Blues**: blue drops get their own chat line too, and the Loot tab calls them Blues.
