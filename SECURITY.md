@@ -11,10 +11,10 @@ Biggus shares data between guild members' copies by hidden addon whispers. Anyth
 | Bad values: huge amounts, nonsense numbers | Every number is checked against a range: gold up to the game's cap, item counts, bank tabs 1–8, a run at most 5 people and 8 hours long, at most 25 deaths per person per run, at most 5 of one item per person per run. Anything out of range is dropped. |
 | A time in the future, to always count as "newest" (bank gold, goal) | Times more than 10 minutes in the future, or more than 400 days old, are dropped. |
 | Text that fakes item links or icons, or breaks guild chat | The game's `\|` escape codes and control characters are stripped from every received name, dungeon name, goal name and version, and their length is limited. Reports posted to guild chat only contain cleaned text. |
-| Making up runs of other people | A player can only report a run they were in themselves, and only deaths and loot of the people in that run. Runs are passed on only by people who were in them, never second-hand. A run can't be padded past 5 people. |
+| Making up runs of other people | Not blocked: the guild trusts each other, so runs are passed on second-hand and any guild member may report any run, so that runs keep spreading after the people in them log off. What still holds: deaths and loot only count for people in that run, within the limits above, and a run can't be padded past 5 people. |
 | Changing the savings goal | Other copies only take a goal from the guild master and the first officer rank. A goal set by anyone else stays on their own copy. |
 | Faking bank entries | Every received entry remembers who reported it. When you open the guild bank yourself, entries others reported that the real log contradicts are dropped, you're told who reported them, and those entries are never accepted again. Only the stretch of time the game's log still shows can be checked. |
-| Removing a faker's data | `/biggus block Name` ignores a player from then on. `/biggus forget Name` drops every bank entry, run, death, loot drop, bank gold and goal they reported. |
+| Removing a faker's data | `/biggus block Name` ignores a player from then on. `/biggus forget Name` drops every bank entry, run, death, loot drop, bank gold and goal your copy got from them first. |
 
 ## Information leaks
 
@@ -27,7 +27,8 @@ Biggus shares data between guild members' copies by hidden addon whispers. Anyth
 
 ## What Biggus can't prevent
 
-- **A member lying about their own runs.** Someone who really was in a run can still invent deaths or loot for that run, within the limits above, or invent a run with up to 4 other names. Their claims are marked with their name, so `/biggus forget` removes them. There's no way to prove a run happened without game data from a second player.
+- **A member making up runs.** Any guild member can invent a run with up to 5 names, including people who weren't online, and deaths and loot for it within the limits above. There's no way to prove a run happened without game data from a second player.
+- **Made-up runs spreading.** Because runs are passed on second-hand, a made-up run reaches copies through honest players too. Each copy remembers only who it first heard a claim from, so `/biggus forget Name` removes what came straight from that player, but not what reached you through someone else. If a faker is found, everyone should run `/biggus block` and `/biggus forget` for them; claims that reached a copy second-hand stay on it.
 - **Bank entries older than the game's log.** The game keeps only the last ~25 entries per tab, so older reported entries can't be checked against the real log.
 - **A member at your rank or higher passing on item-tab history.** Biggus can't see bank tab permissions, so it goes by rank order.
 - **Being recorded by others.** Turning sharing off stops your copy sending, but guildmates' copies still record runs you're in, and bank deposits you make, because they see those in the game.
