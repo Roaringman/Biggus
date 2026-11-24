@@ -2,7 +2,7 @@
 ## Title: |cffffd700Biggus|r
 ## Notes: Guild fun for Biggus: who feeds the guild bank and who raids it, the savings goal, who runs dungeons with whom, who dies the most and who gets the loot. /biggus
 ## Author: Biggus
-## Version: 0.4.1
+## Version: 0.4.2
 ## SavedVariables: BiggusDB
 ## IconTexture: Interface\Icons\INV_Misc_Coin_02
 
