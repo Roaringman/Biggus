@@ -29,7 +29,7 @@ Biggus keeps score in your guild, with a sense of humour. Everything it shows co
 
 **Dungeons.** Runs with guild members are logged with who was there, deaths and favourite dungeons. Titles include *Lives in Dungeons*, *Ride or Die* and *Floor Inspector*.
 
-**Loot envy.** Rare and epic drops in guild runs, with *Luckiest Biggus* and *Cursed by RNG*.
+**Loot envy.** Blue and epic drops in guild runs, and each guildie's Need and Greed rolls won over other guildies, with titles like *Luckiest [your guild]*, *Dice Lord* and *Cursed by RNG*.
 
 **Most Wanted and Avengers.** When an enemy-faction player kills a guildie outside battlegrounds, the killer goes on the guild's Most Wanted list, read from the victim's own death recap. Hovering an enemy player shows if they're on it, and guildies who get them back land on the Avengers list. The list stays inside the guild, only counts the last 30 days on tooltips, and can be switched off in the settings. Biggus never messages or posts about the players on it.
 

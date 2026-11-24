@@ -421,7 +421,7 @@ function W.Report(hours, label)
         B.Say("nobody on the Most Wanted list for " .. label:lower() .. ".")
         return
     end
-    local lines = { "Biggus Most Wanted, " .. label:lower() .. ": " .. sum.total .. " guildies ganked" }
+    local lines = { B.GuildName() .. " Most Wanted, " .. label:lower() .. ": " .. sum.total .. " guildies ganked" }
     for i = 1, math.min(3, #list) do
         local p = list[i]
         table.insert(lines, (i == 1 and "{skull} " or "{cross} ") .. "#" .. i .. " " .. B.ShortName(p.name)
@@ -702,7 +702,7 @@ function W.RevengeReport(hours, label)
         B.Say("no revenge kills to report for " .. label:lower() .. ".")
         return
     end
-    local lines = { "Biggus Avengers, " .. label:lower() .. ": " .. sum.total .. " Most Wanted players paid back" }
+    local lines = { B.GuildName() .. " Avengers, " .. label:lower() .. ": " .. sum.total .. " Most Wanted players paid back" }
     local top = list[1]
     table.insert(lines, "{star} Guild Avenger: " .. B.ShortName(top.name) .. " (" .. top.total .. " revenge kills, "
         .. top.blows .. " killing blows)")
