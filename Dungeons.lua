@@ -874,7 +874,7 @@ local function Title(p, list, sum)
 end
 
 local function LootTitle(p, sum)
-    if p == sum.luckiest then return "|cffa335eeLuckiest Biggus|r" end
+    if p == sum.luckiest then return "|cffa335eeLuckiest " .. B.GuildName() .. "|r" end
     if p == sum.diceLord then return "|cffff8800Dice Lord|r" end
     if p == sum.goblin then return "|cff0070ddLoot Goblin|r" end
     if p.needWins >= 3 and p.needWins >= 2 * p.greedWins then return "Needs Everything" end
@@ -969,7 +969,7 @@ function D.LootHighlight(hours)
     local _, sum = D.Stats(hours)
     local parts = {}
     if sum.luckiest then
-        table.insert(parts, "Luckiest Biggus: " .. B.ShortName(sum.luckiest.name) .. ", " .. sum.luckiest.epics .. " epics")
+        table.insert(parts, "Luckiest " .. B.GuildName() .. ": " .. B.ShortName(sum.luckiest.name) .. ", " .. sum.luckiest.epics .. " epics")
     end
     if sum.diceLord then
         table.insert(parts, "Dice Lord: " .. B.ShortName(sum.diceLord.name) .. ", " .. sum.diceLord.rollWins
@@ -985,7 +985,7 @@ function D.Report(hours, label)
         B.Say("no dungeon runs to report for " .. label:lower() .. ".")
         return
     end
-    local lines = { "Biggus dungeon report, " .. label:lower() .. ": " .. sum.total .. " runs together" }
+    local lines = { B.GuildName() .. " dungeon report, " .. label:lower() .. ": " .. sum.total .. " runs together" }
     local top = list[1]
     table.insert(lines, "{triangle} Lives in Dungeons: " .. B.ShortName(top.name) .. " (" .. top.runs .. " runs)")
     if sum.duo then
@@ -1008,11 +1008,11 @@ function D.LootReport(hours, label)
         B.Say("no blue or epic drops or roll wins to report for " .. label:lower() .. ".")
         return
     end
-    local lines = { "Biggus loot envy report, " .. label:lower() .. ":" }
+    local lines = { B.GuildName() .. " loot envy report, " .. label:lower() .. ":" }
     local lucky = sum.luckiest
     if lucky then
         local _, link = GetItemInfo(lucky.best)
-        table.insert(lines, "{star} Luckiest Biggus: " .. B.ShortName(lucky.name) .. " (" .. lucky.epics
+        table.insert(lines, "{star} Luckiest " .. B.GuildName() .. ": " .. B.ShortName(lucky.name) .. " (" .. lucky.epics
             .. " epics" .. (link and (", best: " .. link) or "") .. ")")
     end
     if sum.goblin and sum.goblin ~= lucky then

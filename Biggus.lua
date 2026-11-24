@@ -170,6 +170,11 @@ end
 ---------------------------------------------------------------------------------------------------
 -- Saved data, one history per guild
 
+-- your guild's name, for report headings ("Biggus bank report: ..."); "Guild" when it isn't known
+function B.GuildName()
+    return B.Text(B.Plain(GetGuildInfo("player")), 40) or "Guild"
+end
+
 local function Guild()
     local name = GetGuildInfo("player")
     if not name then return nil end
@@ -600,7 +605,7 @@ local function Report()
         Say("nothing to report for " .. RANGES[rangeIndex].label:lower() .. ".")
         return
     end
-    local lines = { "Biggus bank report, " .. RANGES[rangeIndex].label:lower() .. ":" }
+    local lines = { B.GuildName() .. " bank report, " .. RANGES[rangeIndex].label:lower() .. ":" }
     local saint, goblin = list[1], list[#list]
     if saint.net > 0 then
         table.insert(lines, "{star} Patron Saint of the Vault: " .. ShortName(saint.name) .. " (+" .. Money(saint.net) .. ")")
