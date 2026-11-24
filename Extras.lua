@@ -7,8 +7,9 @@ local OPTIONS = {
     { key = "chatRuns", label = "Say when a dungeon run with guild members is logged" },
     { key = "chatDeaths", label = "Make fun of deaths in dungeon runs" },
     { key = "chatLoot", label = "Envy other people's epic drops" },
-    { key = "chatWanted", label = "Announce ganks and warn when I target someone Most Wanted" },
-    { key = "share", label = "Share bank, runs, deaths, loot and kills with guild members who have Biggus" },
+    { key = "wanted", label = "Track Most Wanted and Avengers (enemy players who killed guildies)" },
+    { key = "chatWanted", label = "Announce ganks and revenge, and warn when I target someone Most Wanted" },
+    { key = "share", label = "Share bank, runs, deaths, loot, kills and revenge with guild members who have Biggus" },
     { key = "minimap", label = "Show the minimap button" },
     { key = "tooltip", label = "Show Biggus info on tooltips (guild members, and Most Wanted enemies)" },
 }
@@ -102,6 +103,11 @@ local function AddLines(tooltip)
         tooltip:AddLine("|cffff4444Biggus Most Wanted #" .. place .. "|r - " .. title)
         tooltip:AddLine("Killed " .. victims .. " (" .. p.kills .. (p.kills == 1 and " kill" or " kills")
             .. "), last in " .. (p.lastZone or p.zone or "?") .. " " .. B.Ago(B.Now() - p.last), 1, 0.6, 0.6, true)
+        local paid, lastBy = B.Wanted.PaidBack(name)
+        if paid > 0 then
+            tooltip:AddLine("Paid back by guildies " .. paid .. (paid == 1 and " time" or " times")
+                .. (lastBy and (" (last: " .. B.ShortName(lastBy) .. ")") or ""), 0.4, 1, 0.4)
+        end
         tooltip:Show()
         return
     end

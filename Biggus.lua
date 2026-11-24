@@ -86,6 +86,7 @@ end
 -- a unit's name as Biggus keeps it
 function B.UnitName(unit)
     local name, second = UnitFullName(unit)
+    name, second = B.Plain(name), B.Plain(second)
     if not name or name == UNKNOWNOBJECT then return nil end
     if second and second ~= "" then return B.Canon(name .. "-" .. second) end
     return name
@@ -97,6 +98,13 @@ end
 -- break guild chat when a report posts them) and control characters.
 local MAX_COPPER = 2147483647
 local KEEP_DAYS = 400 -- older history is dropped
+
+-- The game hands some values over as "secret" (in instances, in fights): addons may display them but
+-- not compare or test them. Plain gives nil for those, so code skips them instead of erroring.
+function B.Plain(value)
+    if issecretvalue and issecretvalue(value) then return nil end
+    return value
+end
 
 function B.Num(value, min, max)
     local n = tonumber(value)
@@ -319,21 +327,25 @@ local function MoneyMsg(g)
     return table.concat({ "M", g.bankMoney or 0, g.tabCost or 0, g.tabsOwned or 0, g.moneySeen or 0 }, "\t")
 end
 
+-- The goal's name is text a player typed, so it goes as a logged message (Sync.lua), which Blizzard
+-- asks for with user-written content; logged messages use "~" between fields.
 local function GoalMsg(g)
     local goal = g.goal or {}
-    local name = B.Text(goal.name, 40) or ""
-    return table.concat({ "G", g.goalAt or 0, goal.copper or 0, name }, "\t")
+    local name = (B.Text(goal.name, 40) or ""):gsub("~", "-")
+    return table.concat({ "G", g.goalAt or 0, goal.copper or 0, name }, "~")
 end
 
 -- everything this copy learned after `since` (server time). Item-tab entries only when the receiver
 -- may see them (Sync.lua decides: a rank at least as high as yours), since lower ranks may not be
 -- allowed to view those tabs' logs; the gold log is open to everyone who can open the bank.
-function B.BankCatchUp(since, itemsToo)
+function B.BankCatchUp(since, itemsToo, oldest)
     local g = Guild()
     local msgs = {}
     if not g then return msgs end
     for _, e in ipairs(g.log) do
-        if (e.u or 0) > since and (itemsToo or e.kind == "money") then table.insert(msgs, BankMsg(g, e)) end
+        if (e.u or 0) > since and e.hour * 3600 >= (oldest or 0) and (itemsToo or e.kind == "money") then
+            table.insert(msgs, BankMsg(g, e))
+        end
     end
     if g.moneySeen and (g.moneyU or 0) > since then table.insert(msgs, MoneyMsg(g)) end
     if g.goalAt and (g.goalU or 0) > since then table.insert(msgs, GoalMsg(g)) end
@@ -560,11 +572,20 @@ local function Best(list, field)
 end
 
 local reporting = false -- a report is still being sent
+local lastReport = 0
+local REPORT_EVERY = 30   -- seconds between two reports: guild chat isn't for flooding
+local MAX_REPORT_LINES = 6
 
--- Posts lines to guild chat. Sent all at once they can arrive out of order, so they go half a second apart.
+-- Posts lines to guild chat, only when you ask for it (Report button or /biggus report). Sent all at
+-- once they can arrive out of order, so they go half a second apart.
 local function SendLines(lines)
     if reporting then return end
-    reporting = true
+    if GetTime() - lastReport < REPORT_EVERY then
+        Say("a report went out " .. math.floor(GetTime() - lastReport) .. " seconds ago - wait a little before the next one.")
+        return
+    end
+    while #lines > MAX_REPORT_LINES do table.remove(lines) end
+    reporting, lastReport = true, GetTime()
     for i, line in ipairs(lines) do
         C_Timer.After((i - 1) * 0.5, function()
             SendChatMessage(line, "GUILD")
@@ -670,9 +691,19 @@ local VIEWS = {
         highlight = function() return B.Wanted.Highlight(RANGES[rangeIndex].hours) end,
         report = function() B.Wanted.Report(RANGES[rangeIndex].hours, RANGES[rangeIndex].label) end,
     },
+    avengers = {
+        title = "Avengers: guildies who paid the Most Wanted back",
+        empty = "No revenge yet. Kill someone on the Most Wanted list and you'll be the first.",
+        foot = "Killing blows by you or your group, plus helping: a wanted player you targeted dying while you fight.",
+        columns = function() return B.Wanted.RevengeColumns end,
+        rows = function() return B.Wanted.RevengeRows(RANGES[rangeIndex].hours) end,
+        info = function() return B.Wanted.RevengeInfo() end,
+        highlight = function() return B.Wanted.RevengeHighlight(RANGES[rangeIndex].hours) end,
+        report = function() B.Wanted.RevengeReport(RANGES[rangeIndex].hours, RANGES[rangeIndex].label) end,
+    },
 }
-local VIEW_ORDER = { "bank", "dungeons", "loot", "wanted" }
-local VIEW_LABELS = { bank = "Bank", dungeons = "Dungeons", loot = "Loot", wanted = "Most Wanted" }
+local VIEW_ORDER = { "bank", "dungeons", "loot", "wanted", "avengers" }
+local VIEW_LABELS = { bank = "Bank", dungeons = "Dungeons", loot = "Loot", wanted = "Most Wanted", avengers = "Avengers" }
 local viewName = "bank"
 
 local function Columns(view)
@@ -1056,7 +1087,7 @@ SlashCmdList.BIGGUS = function(msg)
     elseif cmd == "report" then
         local which = VIEWS[rest:lower()] or VIEWS.bank
         which.report()
-    elseif cmd == "dungeons" or cmd == "loot" or cmd == "wanted" then
+    elseif cmd == "dungeons" or cmd == "loot" or cmd == "wanted" or cmd == "avengers" then
         Toggle(cmd)
     elseif cmd == "deathcheck" then
         B.Wanted.DeathCheck()
@@ -1072,8 +1103,9 @@ SlashCmdList.BIGGUS = function(msg)
         end
     elseif cmd == "help" then
         Say("/biggus - bank leaderboard · /biggus dungeons - runs and deaths · /biggus loot - loot envy · "
-            .. "/biggus wanted - enemy players who killed guildies · /biggus deathcheck - what your last death "
-            .. "recap gave · /biggus report (or report dungeons / loot / wanted) - post to guild chat · /biggus goal 5000 Name - "
+            .. "/biggus wanted - enemy players who killed guildies · /biggus avengers - guildies who got them back · "
+            .. "/biggus deathcheck - what your last death recap gave · /biggus report (or report dungeons / loot / "
+            .. "wanted / avengers) - post to guild chat · /biggus goal 5000 Name - "
             .. "set a savings goal (/biggus goal alone: back to the next bank tab) · /biggus settings · "
             .. "/biggus sync - is sharing working? (/biggus sync now: say hello to everyone again) · "
             .. "/biggus block Name / unblock Name - ignore a player's messages · /biggus forget Name - "
