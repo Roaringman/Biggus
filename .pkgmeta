@@ -1,0 +1,20 @@
+package-as: Biggus
+
+enable-nolib-creation: no
+
+# the release notes on CurseForge and GitHub come from CHANGELOG.md (written for players)
+manual-changelog:
+  filename: CHANGELOG.md
+  markup-type: markdown
+
+# the zip holds the addon only: its .toc and .lua files
+ignore:
+  - .github
+  - .gitattributes
+  - .gitignore
+  - .pkgmeta
+  - README.md
+  - SECURITY.md
+  - CHANGELOG.md
+  - CURSEFORGE.md
+  - art

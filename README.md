@@ -56,3 +56,7 @@ Also: a minimap button, Biggus lines on guild members' tooltips, and a settings 
 - Shared data is checked, limited and traceable; see [SECURITY.md](SECURITY.md) for what Biggus does against faked data and leaks, and what it can't prevent.
 - Net bank value counts items at vendor price, since addons can't see auction prices.
 - Everyone needs Biggus 0.4 or newer for sharing: 0.3 used the guild channel, which Forever refuses.
+
+## License
+
+[MIT License](LICENSE): use, change or share Biggus however you like, as long as the copyright notice comes along.
