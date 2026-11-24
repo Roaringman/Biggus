@@ -1,5 +1,10 @@
 # Biggus changelog
 
+## 0.7.0
+- **Roll wins**: the Loot tab counts each guildie's Need and Greed rolls won over other guildies (only rolls where at least one other guildie also rolled). New titles *Dice Lord* and *Needs Everything*, and a Dice Lord line in the loot report.
+- **Blues**: blue drops get their own chat line too, and the Loot tab calls them Blues.
+- Loot and roll lines are read correctly when the game shows player names in colour or as links.
+
 ## 0.6.1
 - Biggus now keeps to Blizzard's add-on rules and WoW Forever's restrictions, checked in the game:
   - Sharing sends at most one message a second and waits whenever the game locks addon messages down (in instances and fights).

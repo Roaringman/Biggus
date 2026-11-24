@@ -17,6 +17,8 @@
 --   R  run:    "R", start, last seen, instance ID, dungeon, members (comma separated)
 --   X  deaths: "X", run start, instance ID, member, deaths in that run
 --   L  loot:   "L", run start, instance ID, member, item ID, how many, quality
+--   W  roll won over guildies: "W", run start, instance ID, winner, item ID, "need" or "greed",
+--              how many times, how many other guildies rolled on it
 
 local ADDON, B = ...
 local D = {}
@@ -45,6 +47,17 @@ local ENVY_QUIPS = {
 local SELF_LOOT_QUIPS = {
     "You got %s. The guild is pretending to be happy for you.",
     "You got %s. Try not to brag. (Brag a little.)",
+}
+
+local BLUE_QUIPS = {
+    "%s got %s. Blue, but it counts.",
+    "%s got %s. Not purple, but we'll allow it.",
+    "%s got %s. A respectable shade of blue.",
+}
+
+local SELF_BLUE_QUIPS = {
+    "You got %s. A blue! Modest, but yours.",
+    "You got %s. Blue suits you.",
 }
 
 local Now = B.Now
@@ -211,6 +224,25 @@ local function SetLoot(r, who, itemID, n, quality, src)
     end
 end
 
+-- Roll wins over guildies, per run: "winner|item|need" -> { who, id, kind = "need" or "greed", n, beat }
+-- n: how many times; beat: how many other guildies rolled on it too. Highest count anyone saw wins.
+local function SetRoll(r, who, itemID, kind, n, beat, src)
+    r.rolls = r.rolls or {}
+    local key = who .. "|" .. itemID .. "|" .. kind
+    local e = r.rolls[key]
+    if not e then
+        e = { who = who, id = itemID, kind = kind, n = 0, beat = 0 }
+        r.rolls[key] = e
+    end
+    if (beat or 0) > e.beat then e.beat = beat end
+    if n > e.n then
+        e.n, e.src = n, src
+        r.u = Now()
+        Dirty()
+        return true
+    end
+end
+
 ---------------------------------------------------------------------------------------------------
 -- Sharing with other Biggus users (Sync.lua carries the messages)
 
@@ -230,6 +262,10 @@ local function LootMsg(r, e)
     return table.concat({ "L", r.at, r.id or 0, e.who, e.id, e.n, e.q }, "\t")
 end
 
+local function RollMsg(r, e)
+    return table.concat({ "W", r.at, r.id or 0, e.who, e.id, e.kind, e.n, e.beat }, "\t")
+end
+
 -- Everything this copy learned about runs after `since` (server time): each run, then its deaths and
 -- loot. That includes runs you only heard about from someone else, so a run keeps spreading from copy
 -- to copy after the people who were in it log off.
@@ -240,6 +276,7 @@ function D.CatchUp(since, oldest)
             table.insert(msgs, RunMsg(r))
             for who in pairs(r.deaths or {}) do table.insert(msgs, DeathMsg(r, who)) end
             for _, e in pairs(r.loot or {}) do table.insert(msgs, LootMsg(r, e)) end
+            for _, e in pairs(r.rolls or {}) do table.insert(msgs, RollMsg(r, e)) end
         end
     end
     return msgs
@@ -287,7 +324,7 @@ function D.Receive(f, from)
         end
         local r, new = Record(runs, run)
         if new then r.src = from end
-    elseif f[1] == "X" or f[1] == "L" then
+    elseif f[1] == "X" or f[1] == "L" or f[1] == "W" then
         local at, id, who = B.Time(f[2]), B.Num(f[3], 0, 10000000), B.CleanName(f[4])
         local r = at and id and who and FindRunWith(runs, id, at, who)
         if not r then return end -- that run's message hasn't come yet
@@ -295,6 +332,10 @@ function D.Receive(f, from)
         if f[1] == "X" then
             local n = B.Num(f[5], 1, MAX_DEATHS)
             if n then SetDeaths(r, who, n, from) end
+        elseif f[1] == "W" then
+            local itemID, kind = B.Num(f[5], 1, 10000000), (f[6] == "need" or f[6] == "greed") and f[6] or nil
+            local n, beat = B.Num(f[7], 1, MAX_LOOT), B.Num(f[8], 1, MAX_MEMBERS - 1)
+            if itemID and kind and n and beat then SetRoll(r, who, itemID, kind, n, beat, from) end
         else
             local itemID, n, q = B.Num(f[5], 1, 10000000), B.Num(f[6], 1, MAX_LOOT), B.Num(f[7], MIN_LOOT_QUALITY, MAX_QUALITY)
             if itemID and n and q then SetLoot(r, who, itemID, n, q, from) end
@@ -329,6 +370,12 @@ function D.Forget(name)
                     n = n + 1
                 end
             end
+            for key, e in pairs(r.rolls or {}) do
+                if e.src == name then
+                    r.rolls[key] = nil
+                    n = n + 1
+                end
+            end
         end
     end
     Dirty()
@@ -353,15 +400,17 @@ D.Prune = Prune
 
 local current           -- the stored run you're in (kept after you step out, until another starts)
 local inside = false    -- whether you're in its dungeon right now
-local seenDeaths, seenLoot, wasDead = {}, {}, {}
+local seenDeaths, seenLoot, seenRolls, wasDead = {}, {}, {}, {}
+local pendingRolls = {} -- item ID -> { choices = { name -> "need"/"greed" } }: rolls still open
 
 local function SetCurrent(r)
     if r == current then return end
     current = r
-    seenDeaths, seenLoot, wasDead = {}, {}, {}
+    seenDeaths, seenLoot, seenRolls, wasDead, pendingRolls = {}, {}, {}, {}, {}
     if r then
         for who, n in pairs(r.deaths or {}) do seenDeaths[who] = n end
         for key, e in pairs(r.loot or {}) do seenLoot[key] = e.n end
+        for key, e in pairs(r.rolls or {}) do seenRolls[key] = e.n end
     end
 end
 
@@ -467,15 +516,169 @@ local function LootPatterns()
     return lootPatterns
 end
 
+-- A chat line without the extras the client can put round names: a "[Loot]: " tag (a lootHistory
+-- link), player links and colours. Item links are kept. (Forever does this; ForeverDungeonJournal
+-- found the same.)
+local function CleanLine(text)
+    return (text:gsub("|HlootHistory:[^|]*|h.-|h:?%s*", "")
+        :gsub("|Hplayer:[^|]*|h%[?([^%]|]*)%]?|h", "%1")
+        :gsub("|c%x%x%x%x%x%x%x%x([^|]*)|r", "%1"))
+end
+
 -- who, item link, how many
 local function ParseLoot(text)
+    local line = CleanLine(text) -- not the raw line: "(.+)" would take link codes into the name
     for _, l in ipairs(LootPatterns()) do
-        local a, b, c = text:match(l[1])
+        local a, b, c = line:match(l[1])
         if a then
             if l[2] then return FullName("player"), a, tonumber(b) or 1 end
             return a, b, tonumber(c) or 1
         end
     end
+end
+
+---------------------------------------------------------------------------------------------------
+-- Loot rolls: who rolled Need or Greed on what, and who won it
+
+-- A game message with numbered or plain placeholders ("%1$s won: %2$s", "%s won: %s") as a
+-- pattern, with the order its captures come in. Not anchored at the start: a tag can come first.
+local function RollPattern(fmt)
+    if type(fmt) ~= "string" then return nil end
+    local out, order, i = {}, {}, 1
+    while i <= #fmt do
+        local c = fmt:sub(i, i)
+        if c == "%" then
+            local pos, conv = fmt:match("^%%(%d)%$([sd])", i)
+            local skip = 4
+            if not conv then
+                conv = fmt:match("^%%([sd])", i)
+                skip = 2
+            end
+            if conv then
+                table.insert(order, tonumber(pos) or (#order + 1))
+                table.insert(out, conv == "d" and "(%d+)" or "(.-)")
+                i = i + skip
+            else
+                table.insert(out, "%%")
+                i = i + ((fmt:sub(i + 1, i + 1) == "%") and 2 or 1)
+            end
+        elseif c:find("[%(%)%.%+%-%*%?%[%]%^%$]") then
+            table.insert(out, "%" .. c)
+            i = i + 1
+        else
+            table.insert(out, c)
+            i = i + 1
+        end
+    end
+    return { pattern = table.concat(out) .. "$", order = order }
+end
+
+-- the message's values in the game's order (args[1] is %1$s), or nil
+local function RollMatch(p, text)
+    if not p then return nil end
+    -- Always the cleaned line (item links survive the cleaning): matched against the raw one, "(.-)"
+    -- would happily take link and colour codes into a player's name. From its start first, then
+    -- anywhere in it (a tag before it).
+    local clean = CleanLine(text)
+    for _, try in ipairs({ { clean, "^" .. p.pattern }, { clean, p.pattern } }) do
+        local caps = { try[1]:match(try[2]) }
+        if #caps > 0 then
+            local args = {}
+            for k, index in ipairs(p.order) do args[index] = caps[k] end
+            return args
+        end
+    end
+end
+
+local rollPatterns
+local function RollPatterns()
+    if rollPatterns then return rollPatterns end
+    rollPatterns = {
+        youWon = RollPattern(LOOT_ROLL_YOU_WON),          -- "You won: %s"
+        won = RollPattern(LOOT_ROLL_WON),                 -- "%s won: %s"
+        allPassed = RollPattern(LOOT_ROLL_ALL_PASSED),    -- "Everyone passed on: %s"
+        needSelf = RollPattern(LOOT_ROLL_NEED_SELF),      -- "You have selected Need for: %s"
+        greedSelf = RollPattern(LOOT_ROLL_GREED_SELF),
+        needOther = RollPattern(LOOT_ROLL_NEED),          -- "%s has selected Need for: %s"
+        greedOther = RollPattern(LOOT_ROLL_GREED),
+        rolledNeed = RollPattern(LOOT_ROLL_ROLLED_NEED),  -- "Need Roll - %d for %s by %s"
+        rolledNeedBonus = RollPattern(LOOT_ROLL_ROLLED_NEED_ROLE_BONUS),
+        rolledGreed = RollPattern(LOOT_ROLL_ROLLED_GREED),
+    }
+    return rollPatterns
+end
+
+local function ItemIDOf(link)
+    return type(link) == "string" and tonumber(link:match("item:(%d+)")) or nil
+end
+
+-- someone picked Need or Greed on an item
+local function Choose(link, who, kind)
+    local id, name = ItemIDOf(link), B.CleanName(who)
+    if not id or not name then return end
+    pendingRolls[id] = pendingRolls[id] or { choices = {} }
+    local choices = pendingRolls[id].choices
+    if choices[name] ~= "need" then choices[name] = kind end -- a Need stays a Need
+end
+
+local ROLL_QUIPS = {
+    need = { "%s won %s on Need over %d guildie%s. The dice have chosen.",
+             "%s needed %s and beat %d guildie%s to it. Bold." },
+    greed = { "%s won %s on Greed over %d guildie%s. Greed is good.",
+              "%s greeded %s past %d guildie%s. Pure luck. Probably." },
+}
+
+-- the roll on an item is over: counted when a guildie in the run won it over at least one other
+-- guildie who rolled Need or Greed on it too
+local function Won(link, who)
+    local id, name = ItemIDOf(link), B.CleanName(who)
+    local roll = id and pendingRolls[id]
+    if id then pendingRolls[id] = nil end
+    if not roll or not name or not current or not inside then return end
+    local kind = roll.choices[name]
+    local winner = MemberNamed(current, name)
+    if (kind ~= "need" and kind ~= "greed") or not winner then return end
+    local beat = 0
+    for other, k in pairs(roll.choices) do
+        if other ~= name and (k == "need" or k == "greed") and MemberNamed(current, other) then beat = beat + 1 end
+    end
+    if beat == 0 then return end -- no guildie rolled against them
+    local key = winner .. "|" .. id .. "|" .. kind
+    seenRolls[key] = (seenRolls[key] or 0) + 1
+    SetRoll(current, winner, id, kind, seenRolls[key], beat)
+    Queue(RollMsg(current, current.rolls[key]))
+    if B.Opt("chatLoot") then
+        B.Say(Pick(ROLL_QUIPS[kind]):format(B.ShortName(winner), link, beat, beat == 1 and "" or "s"))
+    end
+    B.Refresh()
+end
+
+-- a loot-roll line: true when it was one
+local function OnRollLine(text)
+    local p, me = RollPatterns(), FullName("player")
+    local a = RollMatch(p.youWon, text)
+    if a then Won(a[1], me) return true end
+    a = RollMatch(p.won, text)
+    if a then Won(a[2], a[1]) return true end
+    a = RollMatch(p.allPassed, text)
+    if a then
+        local id = ItemIDOf(a[1])
+        if id then pendingRolls[id] = nil end
+        return true
+    end
+    a = RollMatch(p.needSelf, text)
+    if a then Choose(a[1], me, "need") return true end
+    a = RollMatch(p.greedSelf, text)
+    if a then Choose(a[1], me, "greed") return true end
+    a = RollMatch(p.needOther, text)
+    if a then Choose(a[2], a[1], "need") return true end
+    a = RollMatch(p.greedOther, text)
+    if a then Choose(a[2], a[1], "greed") return true end
+    a = RollMatch(p.rolledNeed, text) or RollMatch(p.rolledNeedBonus, text)
+    if a then Choose(a[2], a[3], "need") return true end
+    a = RollMatch(p.rolledGreed, text)
+    if a then Choose(a[2], a[3], "greed") return true end
+    return false
 end
 
 local QUALITY_COLORS = { ["0070dd"] = 3, a335ee = 4, ff8000 = 5, e6cc80 = 6 }
@@ -490,6 +693,7 @@ end
 local function OnLoot(text)
     text = B.Plain(text)
     if not current or not inside or type(text) ~= "string" then return end
+    if OnRollLine(text) then return end
     local who, link, count = ParseLoot(text)
     if not who then return end
     local member = MemberNamed(current, who)
@@ -501,11 +705,12 @@ local function OnLoot(text)
     seenLoot[key] = (seenLoot[key] or 0) + count
     SetLoot(current, member, itemID, seenLoot[key], q)
     Queue(LootMsg(current, current.loot[key]))
-    if q >= EPIC and B.Opt("chatLoot") then
+    if B.Opt("chatLoot") then
+        local epic = q >= EPIC
         if member == FullName("player") then
-            B.Say(Pick(SELF_LOOT_QUIPS):format(link))
+            B.Say(Pick(epic and SELF_LOOT_QUIPS or SELF_BLUE_QUIPS):format(link))
         else
-            B.Say(Pick(ENVY_QUIPS):format(B.ShortName(member), link))
+            B.Say(Pick(epic and ENVY_QUIPS or BLUE_QUIPS):format(B.ShortName(member), link))
         end
     end
     B.Refresh()
@@ -596,7 +801,8 @@ function D.Stats(hours)
             for _, a in ipairs(r.members) do
                 local p = people[a]
                 if not p then
-                    p = { name = a, runs = 0, buddies = {}, zones = {}, deaths = 0, epics = 0, rares = 0 }
+                    p = { name = a, runs = 0, buddies = {}, zones = {}, deaths = 0, epics = 0, rares = 0,
+                          needWins = 0, greedWins = 0 }
                     people[a] = p
                 end
                 p.runs = p.runs + 1
@@ -617,6 +823,12 @@ function D.Stats(hours)
                     end
                 end
             end
+            for _, e in pairs(r.rolls or {}) do
+                local p = people[e.who]
+                if p then
+                    if e.kind == "need" then p.needWins = p.needWins + e.n else p.greedWins = p.greedWins + e.n end
+                end
+            end
         end
     end
     local list, duo = {}, nil
@@ -624,6 +836,7 @@ function D.Stats(hours)
         p.buddy, p.buddyRuns = Top(p.buddies)
         p.zone, p.zoneRuns = Top(p.zones)
         p.drops = p.epics + p.rares
+        p.rollWins = p.needWins + p.greedWins
         p.buddyCount = 0
         for _ in pairs(p.buddies) do p.buddyCount = p.buddyCount + 1 end
         if p.buddy and (not duo or p.buddyRuns > duo.runs) then
@@ -641,6 +854,7 @@ function D.Stats(hours)
         inspector = Most(list, "deaths", 3),
         luckiest = Most(list, "epics", 1),
         goblin = Most(list, "drops", 1),
+        diceLord = Most(list, "rollWins", 2),
     }
     statsCache[key] = { list, sum }
     return list, sum
@@ -661,7 +875,9 @@ end
 
 local function LootTitle(p, sum)
     if p == sum.luckiest then return "|cffa335eeLuckiest Biggus|r" end
+    if p == sum.diceLord then return "|cffff8800Dice Lord|r" end
     if p == sum.goblin then return "|cff0070ddLoot Goblin|r" end
+    if p.needWins >= 3 and p.needWins >= 2 * p.greedWins then return "Needs Everything" end
     if p.runs >= 5 and p.drops == 0 then return "|cffaaaaaaCursed by RNG|r" end
     if p.drops == 0 then return "Still Waiting" end
     return "Fair Share"
@@ -703,12 +919,12 @@ end
 
 D.LootColumns = {
     { title = "#", width = 22, justify = "RIGHT" },
-    { title = "Name", width = 120 },
-    { title = "Epics", width = 40, justify = "RIGHT" },
-    { title = "Rares", width = 40, justify = "RIGHT" },
-    { title = "Runs", width = 40, justify = "RIGHT" },
-    { title = "Best drop", width = 210 },
-    { title = "Title", width = 130 },
+    { title = "Name", width = 116 },
+    { title = "Epics", width = 38, justify = "RIGHT" },
+    { title = "Blues", width = 38, justify = "RIGHT" },
+    { title = "Rolls won N / G", width = 90, justify = "RIGHT" },
+    { title = "Best drop", width = 170 },
+    { title = "Title", width = 118 },
 }
 
 function D.LootRows(hours)
@@ -718,6 +934,7 @@ function D.LootRows(hours)
     table.sort(sorted, function(x, y)
         if x.epics ~= y.epics then return x.epics > y.epics end
         if x.rares ~= y.rares then return x.rares > y.rares end
+        if x.rollWins ~= y.rollWins then return x.rollWins > y.rollWins end
         return x.name < y.name
     end)
     local rows = {}
@@ -727,7 +944,7 @@ function D.LootRows(hours)
             B.ShortName(p.name),
             p.epics,
             p.rares,
-            p.runs,
+            p.needWins .. " / " .. p.greedWins, -- rolls won over guildies: Need / Greed
             p.best and ItemText(p.best) or "-",
             LootTitle(p, sum),
         }
@@ -750,9 +967,16 @@ end
 
 function D.LootHighlight(hours)
     local _, sum = D.Stats(hours)
-    local p = sum.luckiest
-    if not p then return "No epic drops logged yet. The RNG gods are watching." end
-    return "Luckiest Biggus: " .. B.ShortName(p.name) .. ", " .. p.epics .. " epics"
+    local parts = {}
+    if sum.luckiest then
+        table.insert(parts, "Luckiest Biggus: " .. B.ShortName(sum.luckiest.name) .. ", " .. sum.luckiest.epics .. " epics")
+    end
+    if sum.diceLord then
+        table.insert(parts, "Dice Lord: " .. B.ShortName(sum.diceLord.name) .. ", " .. sum.diceLord.rollWins
+            .. " rolls won over guildies")
+    end
+    if #parts == 0 then return "No epic drops or roll wins logged yet. The RNG gods are watching." end
+    return table.concat(parts, " · ")
 end
 
 function D.Report(hours, label)
@@ -780,8 +1004,8 @@ end
 
 function D.LootReport(hours, label)
     local list, sum = D.Stats(hours)
-    if not sum.goblin then
-        B.Say("no rare or epic drops to report for " .. label:lower() .. ".")
+    if not sum.goblin and not sum.diceLord then
+        B.Say("no blue or epic drops or roll wins to report for " .. label:lower() .. ".")
         return
     end
     local lines = { "Biggus loot envy report, " .. label:lower() .. ":" }
@@ -791,9 +1015,14 @@ function D.LootReport(hours, label)
         table.insert(lines, "{star} Luckiest Biggus: " .. B.ShortName(lucky.name) .. " (" .. lucky.epics
             .. " epics" .. (link and (", best: " .. link) or "") .. ")")
     end
-    if sum.goblin ~= lucky then
+    if sum.goblin and sum.goblin ~= lucky then
         table.insert(lines, "{diamond} Loot Goblin: " .. B.ShortName(sum.goblin.name) .. " ("
-            .. sum.goblin.drops .. " rares and epics)")
+            .. sum.goblin.drops .. " blues and epics)")
+    end
+    if sum.diceLord then
+        local d = sum.diceLord
+        table.insert(lines, "{triangle} Dice Lord: " .. B.ShortName(d.name) .. " (" .. d.rollWins
+            .. " rolls won over guildies: " .. d.needWins .. " Need, " .. d.greedWins .. " Greed)")
     end
     local cursed
     for _, p in ipairs(list) do

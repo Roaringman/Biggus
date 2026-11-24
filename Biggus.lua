@@ -673,8 +673,8 @@ local VIEWS = {
     },
     loot = {
         title = "loot envy: who gets the good stuff",
-        empty = "No loot yet. Rare and epic drops in runs with guild members show up here.",
-        foot = "Rare (blue) and better items looted in runs with guild members.",
+        empty = "No loot yet. Blue and epic drops and roll wins in runs with guild members show up here.",
+        foot = "Blue and better drops in guild runs. Rolls won: Need / Greed wins over at least one other guildie.",
         columns = function() return B.Dungeons.LootColumns end,
         rows = function() return B.Dungeons.LootRows(RANGES[rangeIndex].hours) end,
         info = function() return B.Dungeons.Info() end,
