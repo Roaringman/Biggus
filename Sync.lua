@@ -32,8 +32,13 @@ local MAX_TRIES = 3
 local GetMetadata = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
 local VERSION = (GetMetadata and GetMetadata(ADDON, "Version")) or "?"
 
+local RATE_LIMIT = 200          -- messages one player may send in a minute (3 lanes x 60 = 180 at most)
+
 local live, bulk = {}, {}       -- waiting messages: { to = whisper target, msg = text, tries = n }
 local online = {}               -- name -> whisper target: guild members online now
+local ranks = {}                -- name -> guild rank (0 = guild master): every member, from the roster
+local rateWindow, rateCount, flooded = 0, {}, {}
+local rejected = 0              -- messages refused this session (not from the guild, blocked, too many)
 local helloed = {}              -- name -> true: said hello this session (forgotten when they log off)
 local caughtUp = {}             -- name -> GetTime() of the last catch-up sent to them
 local whisperedAt = {}          -- whisper target -> GetTime(): for hiding the game's "no player named"
@@ -46,11 +51,27 @@ local function Store()
     if not g then return nil end
     g.peers = g.peers or {}     -- name -> { target, version, seen, lastSync }
     g.probed = g.probed or {}   -- name -> when a hello last went to them
+    g.blocked = g.blocked or {} -- name -> true: their messages are ignored
     return g
 end
 
 local function Me()
     return B.UnitName("player")
+end
+
+function S.Rank(name)
+    return ranks[name]
+end
+
+function S.MyRank()
+    local me = Me()
+    return me and ranks[me]
+end
+
+-- whether a member may see item-tab history: a rank at least as high as yours (a lower number)
+local function MaySeeItems(name)
+    local theirs, mine = ranks[name], S.MyRank()
+    return theirs ~= nil and mine ~= nil and theirs <= mine
 end
 
 local function IsOurs(prefix)
@@ -114,13 +135,15 @@ local function Tick()
     end
 end
 
--- a live message to every known Biggus user online
-function S.Broadcast(msg)
+-- a live message to every known Biggus user online (itemTab: only those who may see item-tab history)
+function S.Broadcast(msg, itemTab)
     if not B.Opt("share") then return end
     local g = Store()
     if not g then return end
     for name in pairs(online) do
-        if g.peers[name] then Push(live, Target(name), msg) end
+        if g.peers[name] and not g.blocked[name] and (not itemTab or MaySeeItems(name)) then
+            Push(live, Target(name), msg)
+        end
     end
 end
 
@@ -146,7 +169,7 @@ local function CatchUp(name)
     if not peer or not to then return end
     caughtUp[name] = GetTime()
     local since, now = (peer.lastSync or 0) - MARGIN, B.Now()
-    local msgs = B.BankCatchUp(since)
+    local msgs = B.BankCatchUp(since, MaySeeItems(name))
     for _, msg in ipairs(B.Dungeons.CatchUp(since)) do table.insert(msgs, msg) end
     local last
     for _, msg in ipairs(msgs) do last = Push(bulk, to, msg) end
@@ -159,10 +182,13 @@ local function ScanRoster()
     local g = Store()
     if not g or not GetNumGuildMembers then return end
     local me, now, seen = Me(), B.Now(), {}
-    for i = 1, (GetNumGuildMembers() or 0) do
-        local rosterName, _, _, _, _, _, _, _, isOnline = GetGuildRosterInfo(i)
+    local total = GetNumGuildMembers() or 0
+    if total > 0 then ranks = {} end
+    for i = 1, total do
+        local rosterName, _, rankIndex, _, _, _, _, _, isOnline = GetGuildRosterInfo(i)
         local name = B.Canon(rosterName)
-        if name and isOnline and name ~= me then
+        if name then ranks[name] = rankIndex or 99 end
+        if name and isOnline and name ~= me and not g.blocked[name] then
             seen[name] = true
             online[name] = online[name] or (rosterName:gsub("%-$", ""))
             if not helloed[name] then
@@ -189,12 +215,34 @@ end
 ---------------------------------------------------------------------------------------------------
 -- Receiving
 
+-- Only messages from current guild members are read (anyone on the server can whisper an addon
+-- message), not from blocked players, and not more than RATE_LIMIT a minute from one player.
+local function Allowed(g, from)
+    if not ranks[from] or g.blocked[from] then return false end
+    local minute = math.floor(GetTime() / 60)
+    if minute ~= rateWindow then rateWindow, rateCount = minute, {} end
+    rateCount[from] = (rateCount[from] or 0) + 1
+    if rateCount[from] > RATE_LIMIT then
+        if not flooded[from] then
+            flooded[from] = true
+            B.Say(from .. " sent more Biggus messages than any copy normally does; ignoring the rest this "
+                .. "minute. If it keeps happening: /biggus block " .. from)
+        end
+        return false
+    end
+    return true
+end
+
 local function Receive(prefix, text, sender)
     if not IsOurs(prefix) or type(text) ~= "string" or type(sender) ~= "string" then return end
-    local from = B.Canon(sender)
+    local from = B.CleanName(sender)
     if not from or from == Me() then return end
     local g = Store()
     if not g then return end
+    if not Allowed(g, from) then
+        rejected = rejected + 1
+        return
+    end
     counts.received = counts.received + 1
     lastFrom = from
     local peer = g.peers[from] or {}
@@ -206,13 +254,13 @@ local function Receive(prefix, text, sender)
     local f = { strsplit("\t", text) }
     local kind = f[1]
     if kind == "H" or kind == "HA" then
-        peer.version = f[3]
+        peer.version = B.Text(f[3], 12)
         if kind == "H" then Hello(from, true) end
         CatchUp(from)
     elseif kind == "R" or kind == "X" or kind == "L" then
-        B.Dungeons.Receive(f)
+        B.Dungeons.Receive(f, from)
     elseif kind == "B" or kind == "M" or kind == "G" then
-        B.BankReceive(f)
+        B.BankReceive(f, from, ranks[from])
     end
 end
 
@@ -268,6 +316,34 @@ local function Ago(t)
     return math.floor(s / 86400) .. " days ago"
 end
 
+-- /biggus block Name, /biggus unblock Name, /biggus forget Name
+function S.Trust(cmd, arg)
+    local g = Store()
+    if not g then
+        B.Say("you're not in a guild.")
+        return
+    end
+    local name = B.CleanName(arg)
+    if not name then
+        B.Say("usage: /biggus " .. cmd .. " Firstname Lastname")
+        return
+    end
+    if cmd == "block" then
+        g.blocked[name] = true
+        g.peers[name] = nil
+        online[name], helloed[name] = nil, nil
+        B.Say("ignoring " .. name .. "'s Biggus messages from now on. /biggus forget " .. name
+            .. " also drops what they already sent.")
+    elseif cmd == "unblock" then
+        g.blocked[name] = nil
+        B.Say(name .. " is no longer blocked.")
+    else
+        local n = B.ForgetBank(name) + B.Dungeons.Forget(name)
+        B.Say("dropped " .. n .. " things " .. name .. " reported (bank entries, runs, deaths, loot, gold, goal).")
+    end
+    B.Refresh()
+end
+
 function S.Command(arg)
     local g = Store()
     if not g then
@@ -299,7 +375,14 @@ function S.Command(arg)
     B.Say("messages: " .. #live .. " live and " .. #bulk .. " catch-up waiting · this session: sent "
         .. counts.sent .. ", received " .. counts.received .. ", failed " .. counts.failed
         .. (lastFrom and (" · last from " .. lastFrom) or ""))
-    B.Say("last error: " .. (lastError or "none"))
+    B.Say("last error: " .. (lastError or "none") .. " · refused this session (not from the guild, blocked or "
+        .. "flooding): " .. rejected)
+    local blocked = {}
+    for name in pairs(g.blocked) do table.insert(blocked, name) end
+    if #blocked > 0 then
+        table.sort(blocked)
+        B.Say("blocked: " .. table.concat(blocked, ", "))
+    end
 end
 
 ---------------------------------------------------------------------------------------------------

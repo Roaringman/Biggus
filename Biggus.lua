@@ -91,6 +91,38 @@ function B.UnitName(unit)
     return name
 end
 
+-- Checking what other players send. Everything that arrives by addon message is untrusted: numbers
+-- must be in range, times can't be in the future (a future time would win every "newest" contest)
+-- or far in the past, and text loses the game's "|" escape codes (which can fake links and icons, and
+-- break guild chat when a report posts them) and control characters.
+local MAX_COPPER = 2147483647
+local KEEP_DAYS = 400 -- older history is dropped
+
+function B.Num(value, min, max)
+    local n = tonumber(value)
+    if not n or n ~= n or n < min or n > max or n ~= math.floor(n) then return nil end
+    return n
+end
+
+function B.Time(value)
+    local now = B.Now()
+    return B.Num(value, now - KEEP_DAYS * 86400, now + 600)
+end
+
+function B.Text(value, maxLength)
+    if type(value) ~= "string" then return nil end
+    local text = value:gsub("|", ""):gsub("%c", ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if text == "" then return nil end
+    return text:sub(1, maxLength)
+end
+
+-- a player name from a message: plain text, no list or field separators, then the usual form
+function B.CleanName(value)
+    local text = B.Text(value, 48)
+    if not text or text:find("[,\t]") then return nil end
+    return B.Canon(text)
+end
+
 local function HoursAgo(years, months, days, hours)
     return (years or 0) * 8760 + (months or 0) * 730 + (days or 0) * 24 + (hours or 0)
 end
@@ -142,6 +174,7 @@ local function Guild()
         BiggusDB.guilds[key] = g
     end
     if not g.bankV2 then B.MigrateBank(g) end
+    B.PruneBank(g)
     return g, name
 end
 
@@ -288,58 +321,164 @@ end
 
 local function GoalMsg(g)
     local goal = g.goal or {}
-    local name = (goal.name or ""):gsub("\t", " ")
+    local name = B.Text(goal.name, 40) or ""
     return table.concat({ "G", g.goalAt or 0, goal.copper or 0, name }, "\t")
 end
 
--- everything this copy learned after `since` (server time)
-function B.BankCatchUp(since)
+-- everything this copy learned after `since` (server time). Item-tab entries only when the receiver
+-- may see them (Sync.lua decides: a rank at least as high as yours), since lower ranks may not be
+-- allowed to view those tabs' logs; the gold log is open to everyone who can open the bank.
+function B.BankCatchUp(since, itemsToo)
     local g = Guild()
     local msgs = {}
     if not g then return msgs end
     for _, e in ipairs(g.log) do
-        if (e.u or 0) > since then table.insert(msgs, BankMsg(g, e)) end
+        if (e.u or 0) > since and (itemsToo or e.kind == "money") then table.insert(msgs, BankMsg(g, e)) end
     end
     if g.moneySeen and (g.moneyU or 0) > since then table.insert(msgs, MoneyMsg(g)) end
     if g.goalAt and (g.goalU or 0) > since then table.insert(msgs, GoalMsg(g)) end
     return msgs
 end
 
-function B.BankReceive(f)
+-- Bank entries another player reported that the real bank log contradicted (see Verify): never
+-- taken in again, whoever sends them.
+local function Rejected(g, e)
+    local sig = Signature(e)
+    for _, r in ipairs(g.rejected or {}) do
+        if r.sig == sig and math.abs(r.hour - e.hour) <= MATCH_HOURS then return true end
+    end
+    return false
+end
+
+local GOAL_RANK = 1 -- the goal is taken only from the guild master (rank 0) and the first officer rank
+
+-- f: a message's fields; from: who sent it; rank: their guild rank (0 = guild master)
+function B.BankReceive(f, from, rank)
     local g = Guild()
     if not g then return end
     local now = B.Now()
     if f[1] == "B" then
-        local e = {
-            kind = f[2], type = f[3], who = B.Canon(f[4]), id = tonumber(f[5]), count = tonumber(f[6]),
-            money = tonumber(f[7]), tab = tonumber(f[8]), hour = tonumber(f[9]),
-        }
-        local before = tonumber(f[10]) or 0
-        if (e.kind ~= "item" and e.kind ~= "money") or not e.who or not e.hour then return end
-        if e.kind == "money" then e.id, e.count, e.tab = nil, nil, nil else e.money = nil end
+        local kind, kindType = f[2], f[3]
+        local e = { kind = kind, type = kindType, who = B.CleanName(f[4]), hour = B.Num(f[9], 0, NowHour() + 1) }
+        if kind == "item" then
+            if kindType ~= "deposit" and kindType ~= "withdraw" then return end
+            e.id, e.count = B.Num(f[5], 1, 10000000), B.Num(f[6], 1, 10000)
+            e.tab = B.Num(f[8], 1, MAX_GUILDBANK_TABS or 8)
+            if not e.id or not e.count or not e.tab then return end
+        elseif kind == "money" then
+            if kindType ~= "deposit" and kindType ~= "withdraw" and kindType ~= "repair" then return end
+            e.money = B.Num(f[7], 1, MAX_COPPER)
+            if not e.money then return end
+        else
+            return
+        end
+        local before = B.Num(f[10], 0, 100)
+        if not e.who or not e.hour or not before or e.hour < NowHour() - KEEP_DAYS * 24 then return end
+        if Rejected(g, e) then return end
         -- new unless this copy already has as many entries like it as the sender has up to it
         local sig, have = Signature(e), 0
         for _, other in ipairs(g.log) do
             if Signature(other) == sig and math.abs(other.hour - e.hour) <= MATCH_HOURS then have = have + 1 end
         end
         if have > before then return end
-        e.u = now
+        e.u, e.src = now, from -- src: who reported it (entries this copy read itself have none)
         table.insert(g.log, e)
         bankCache = nil
     elseif f[1] == "M" then
-        local seen = tonumber(f[5]) or 0
-        if seen <= (g.moneySeen or 0) then return end
-        g.bankMoney, g.tabCost, g.tabsOwned = tonumber(f[2]), tonumber(f[3]), tonumber(f[4])
-        g.moneySeen, g.moneyU = seen, now
+        local money, cost, tabs = B.Num(f[2], 0, MAX_COPPER), B.Num(f[3], 0, MAX_COPPER), B.Num(f[4], 0, 8)
+        local seen = B.Time(f[5])
+        if not money or not cost or not tabs or not seen or seen <= (g.moneySeen or 0) then return end
+        g.bankMoney, g.tabCost, g.tabsOwned = money, cost, tabs
+        g.moneySeen, g.moneyU, g.moneySrc = seen, now, from
     elseif f[1] == "G" then
-        local at = tonumber(f[2]) or 0
-        if at <= (g.goalAt or 0) then return end
-        local copper = tonumber(f[3]) or 0
-        g.goal = copper > 0 and { copper = copper, name = f[4] ~= "" and f[4] or "Savings goal" } or nil
-        g.goalAt, g.goalU = at, now
+        if not rank or rank > GOAL_RANK then return end -- only the guild's leaders set the goal
+        local at, copper = B.Time(f[2]), B.Num(f[3], 0, MAX_COPPER)
+        if not at or not copper or at <= (g.goalAt or 0) then return end
+        g.goal = copper > 0 and { copper = copper, name = B.Text(f[4], 40) or "Savings goal" } or nil
+        g.goalAt, g.goalU, g.goalSrc = at, now, from
     end
     B.Refresh()
 end
+
+-- After your own bank visit: entries other players reported, from the stretch of time the real log
+-- you just read covers, that the real log doesn't have are dropped (and remembered as rejected).
+-- Only the covered stretch counts - older entries have scrolled out of the game's log.
+local function Verify(found)
+    local g = Guild()
+    if not g then return end
+    local oldest = {} -- log ("money" or tab number) -> oldest hour the real log still shows
+    for _, e in ipairs(found) do
+        local key = e.kind == "money" and "money" or e.tab
+        if not oldest[key] or e.hour < oldest[key] then oldest[key] = e.hour end
+    end
+    local function Count(list, e, sig)
+        local n = 0
+        for _, other in ipairs(list) do
+            if Signature(other) == sig and math.abs(other.hour - e.hour) <= MATCH_HOURS then n = n + 1 end
+        end
+        return n
+    end
+    local dropped, reporters = 0, {}
+    for i = #g.log, 1, -1 do
+        local e = g.log[i]
+        local key = e.kind == "money" and "money" or e.tab
+        if e.src and oldest[key] and e.hour >= oldest[key] + MATCH_HOURS then
+            local sig = Signature(e)
+            if Count(g.log, e, sig) > Count(found, e, sig) then
+                table.remove(g.log, i)
+                g.rejected = g.rejected or {}
+                table.insert(g.rejected, { sig = sig, hour = e.hour })
+                if #g.rejected > 500 then table.remove(g.rejected, 1) end
+                dropped = dropped + 1
+                reporters[e.src] = true
+            end
+        end
+    end
+    if dropped > 0 then
+        local names = {}
+        for name in pairs(reporters) do table.insert(names, name) end
+        Say("dropped " .. dropped .. " bank entries the real bank log doesn't have (reported by "
+            .. table.concat(names, ", ") .. "). /biggus block <name> ignores a player from now on.")
+        bankCache = nil
+    end
+end
+
+-- /biggus forget: drops everything a player reported about the bank. Returns how much.
+function B.ForgetBank(name)
+    local g = Guild()
+    if not g then return 0 end
+    local n = 0
+    for i = #g.log, 1, -1 do
+        if g.log[i].src == name then
+            table.remove(g.log, i)
+            n = n + 1
+        end
+    end
+    if g.moneySrc == name then
+        g.bankMoney, g.moneySeen, g.moneySrc = nil, nil, nil -- the next bank visit counts it again
+        n = n + 1
+    end
+    if g.goalSrc == name then
+        g.goal, g.goalSrc = nil, nil
+        n = n + 1
+    end
+    bankCache = nil
+    return n
+end
+
+-- once a session: history older than KEEP_DAYS goes, and the log never grows past MAX_LOG entries
+local MAX_LOG = 6000
+local pruned = false
+local function Prune(g)
+    if pruned then return end
+    pruned = true
+    local oldest = NowHour() - KEEP_DAYS * 24
+    for i = #g.log, 1, -1 do
+        if g.log[i].hour < oldest then table.remove(g.log, i) end
+    end
+    while #g.log > MAX_LOG do table.remove(g.log, 1) end
+end
+B.PruneBank = Prune
 
 -- old saved data: names the new way, and the gold and goal ready to share
 local function Migrate(g)
@@ -822,10 +961,12 @@ local function ReadSoon()
     C_Timer.After(1, function()
         readPending = false
         local g = Guild()
-        for _, e in ipairs(Merge(ReadLogs())) do
+        local found = ReadLogs()
+        for _, e in ipairs(Merge(found)) do
             table.insert(newSinceOpen, e)
-            if g then B.Sync.Broadcast(BankMsg(g, e)) end
+            if g then B.Sync.Broadcast(BankMsg(g, e), e.kind == "item") end
         end
+        Verify(found)
         Refresh()
         if not announcePending then
             announcePending = true
@@ -883,18 +1024,23 @@ SlashCmdList.BIGGUS = function(msg)
             return
         end
         local gold, name = rest:match("^(%d+)%s*(.*)$")
-        if gold then
-            g.goal = { copper = tonumber(gold) * 10000, name = name ~= "" and name or "Savings goal" }
-            Say("now saving for " .. g.goal.name .. ": " .. Money(g.goal.copper) .. ". Shared with the guild's Biggus users.")
+        local leader = (B.Sync.MyRank() or 99) <= GOAL_RANK
+        local shared = leader and " Shared with the guild's Biggus users."
+            or " Only on your copy: other copies take the goal from the guild master and officers only."
+        if gold and tonumber(gold) * 10000 <= MAX_COPPER then
+            g.goal = { copper = tonumber(gold) * 10000, name = B.Text(name, 40) or "Savings goal" }
+            Say("now saving for " .. g.goal.name .. ": " .. Money(g.goal.copper) .. "." .. shared)
         else
             g.goal = nil
-            Say("back to saving for the next bank tab. Shared with the guild's Biggus users.")
+            Say("back to saving for the next bank tab." .. shared)
         end
-        g.goalAt, g.goalU = B.Now(), B.Now()
-        B.Sync.Broadcast(GoalMsg(g))
+        g.goalAt, g.goalU, g.goalSrc = B.Now(), B.Now(), nil
+        if leader then B.Sync.Broadcast(GoalMsg(g)) end
         Refresh()
     elseif cmd == "sync" then
         B.Sync.Command(rest:lower())
+    elseif cmd == "block" or cmd == "unblock" or cmd == "forget" then
+        B.Sync.Trust(cmd, rest)
     elseif cmd == "report" then
         local which = VIEWS[rest:lower()] or VIEWS.bank
         which.report()
@@ -915,6 +1061,8 @@ SlashCmdList.BIGGUS = function(msg)
             .. "/biggus report (or report dungeons / report loot) - post to guild chat · /biggus goal 5000 Name - "
             .. "set a savings goal (/biggus goal alone: back to the next bank tab) · /biggus settings · "
             .. "/biggus sync - is sharing working? (/biggus sync now: say hello to everyone again) · "
+            .. "/biggus block Name / unblock Name - ignore a player's messages · /biggus forget Name - "
+            .. "drop everything that player reported · "
             .. "/biggus reset - forget the bank history")
     else
         if not Supported() then

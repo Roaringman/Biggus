@@ -84,6 +84,7 @@ local function Runs()
     if not g then return nil, nil end
     g.runs = g.runs or {}
     Migrate(g)
+    D.Prune(g.runs)
     return g.runs, g
 end
 
@@ -183,17 +184,19 @@ local function Record(runs, run)
     return r, false, changed
 end
 
--- Deaths and loot keep the highest count anyone saw.
-local function SetDeaths(r, who, n)
+-- Deaths and loot keep the highest count anyone saw. src: who reported it (nil: seen by this copy).
+local function SetDeaths(r, who, n, src)
     r.deaths = r.deaths or {}
     if n > (r.deaths[who] or 0) then
         r.deaths[who] = n
+        r.deathSrc = r.deathSrc or {}
+        r.deathSrc[who] = src
         r.u = Now()
         Dirty()
     end
 end
 
-local function SetLoot(r, who, itemID, n, quality)
+local function SetLoot(r, who, itemID, n, quality, src)
     r.loot = r.loot or {}
     local key = who .. "|" .. itemID
     local e = r.loot[key]
@@ -202,7 +205,7 @@ local function SetLoot(r, who, itemID, n, quality)
         r.loot[key] = e
     end
     if n > e.n then
-        e.n = n
+        e.n, e.src = n, src
         r.u = Now()
         Dirty()
     end
@@ -227,11 +230,14 @@ local function LootMsg(r, e)
     return table.concat({ "L", r.at, r.id or 0, e.who, e.id, e.n, e.q }, "\t")
 end
 
--- everything this copy learned about runs after `since` (server time): each run, then its deaths and loot
+-- Everything this copy learned about runs after `since` (server time): each run, then its deaths and
+-- loot. Only runs you were in yourself: a run is passed on by the people who were there, never by
+-- hearsay (see D.Receive).
 function D.CatchUp(since)
     local msgs = {}
+    local me = FullName("player")
     for _, r in ipairs(Runs() or {}) do
-        if (r.u or 0) > since then
+        if (r.u or 0) > since and MemberNamed(r, me) == me then
             table.insert(msgs, RunMsg(r))
             for who in pairs(r.deaths or {}) do table.insert(msgs, DeathMsg(r, who)) end
             for _, e in pairs(r.loot or {}) do table.insert(msgs, LootMsg(r, e)) end
@@ -240,38 +246,108 @@ function D.CatchUp(since)
     return msgs
 end
 
--- f: a message's fields
-function D.Receive(f)
+-- Limits on what one message may claim
+local MAX_MEMBERS = 5          -- a 5-player dungeon
+local MAX_RUN_SECONDS = 8 * 3600
+local MAX_DEATHS = 25          -- per person per run
+local MAX_LOOT = 5             -- of one item, per person per run
+local MAX_QUALITY = 7
+
+-- f: a message's fields; from: who sent it. A player may only report runs they were in, and only
+-- deaths and loot of the people in those runs - so nobody can make up runs of others.
+function D.Receive(f, from)
     local runs = Runs()
-    if not runs then return end
+    if not runs or not from then return end
     if f[1] == "R" then
-        local at, last, id = tonumber(f[2]), tonumber(f[3]), tonumber(f[4])
-        if not at or not last or not f[6] then return end
-        local members = {}
-        for _, x in ipairs({ strsplit(",", f[6]) }) do
-            local name = B.Canon(x)
-            if name then table.insert(members, name) end
+        local at, last, id = B.Time(f[2]), B.Time(f[3]), B.Num(f[4], 0, 10000000)
+        local zone = B.Text(f[5], 60)
+        if not at or not last or not id or not zone or last < at or last - at > MAX_RUN_SECONDS
+            or type(f[6]) ~= "string" then
+            return
         end
-        if #members < 2 then return end
+        local members, seen, sender = {}, {}, false
+        for _, x in ipairs({ strsplit(",", f[6]) }) do
+            local name = B.CleanName(x)
+            if name and not seen[name] then
+                seen[name] = true
+                table.insert(members, name)
+                if name == from then sender = true end
+            end
+        end
+        if #members < 2 or #members > MAX_MEMBERS or not sender then return end
         table.sort(members)
-        Record(runs, { at = at, last = last, id = id, zone = f[5], members = members })
+        local run = { at = at, last = last, id = id, zone = zone, members = members }
+        local existing = FindRun(runs, run)
+        if existing then -- adding these people must not make the run bigger than a group can be
+            local all = {}
+            for _, x in ipairs(existing.members) do all[x] = true end
+            for _, x in ipairs(members) do all[x] = true end
+            local size = 0
+            for _ in pairs(all) do size = size + 1 end
+            if size > MAX_MEMBERS then return end
+        end
+        local r, new = Record(runs, run)
+        if new then r.src = from end
     elseif f[1] == "X" or f[1] == "L" then
-        local at, id = tonumber(f[2]), tonumber(f[3])
-        local r = at and f[4] and FindRunWith(runs, id, at, f[4])
-        if not r then return end -- that run's message never came
-        local who = MemberNamed(r, f[4])
+        local at, id, who = B.Time(f[2]), B.Num(f[3], 0, 10000000), B.CleanName(f[4])
+        local r = at and id and who and FindRunWith(runs, id, at, who)
+        if not r or MemberNamed(r, from) ~= from then return end -- unknown run, or the sender wasn't in it
+        who = MemberNamed(r, who)
         if f[1] == "X" then
-            local n = tonumber(f[5])
-            if n then SetDeaths(r, who, n) end
+            local n = B.Num(f[5], 1, MAX_DEATHS)
+            if n then SetDeaths(r, who, n, from) end
         else
-            local itemID, n, q = tonumber(f[5]), tonumber(f[6]), tonumber(f[7])
-            if itemID and n and q then SetLoot(r, who, itemID, n, q) end
+            local itemID, n, q = B.Num(f[5], 1, 10000000), B.Num(f[6], 1, MAX_LOOT), B.Num(f[7], MIN_LOOT_QUALITY, MAX_QUALITY)
+            if itemID and n and q then SetLoot(r, who, itemID, n, q, from) end
         end
     else
         return
     end
     B.Refresh()
 end
+
+-- /biggus forget: drops the runs a player reported first and the deaths and loot they reported.
+-- Returns how many things went.
+function D.Forget(name)
+    local runs = Runs()
+    if not runs then return 0 end
+    local n = 0
+    for i = #runs, 1, -1 do
+        local r = runs[i]
+        if r.src == name then
+            table.remove(runs, i)
+            n = n + 1
+        else
+            for who, src in pairs(r.deathSrc or {}) do
+                if src == name then
+                    r.deaths[who], r.deathSrc[who] = nil, nil
+                    n = n + 1
+                end
+            end
+            for key, e in pairs(r.loot or {}) do
+                if e.src == name then
+                    r.loot[key] = nil
+                    n = n + 1
+                end
+            end
+        end
+    end
+    Dirty()
+    return n
+end
+
+-- once a session: runs older than 400 days go, and there are never more than 3000
+local pruned = false
+local function Prune(runs)
+    if pruned then return end
+    pruned = true
+    local oldest = Now() - 400 * 86400
+    for i = #runs, 1, -1 do
+        if runs[i].at < oldest then table.remove(runs, i) end
+    end
+    while #runs > 3000 do table.remove(runs, 1) end
+end
+D.Prune = Prune
 
 ---------------------------------------------------------------------------------------------------
 -- The run you're in

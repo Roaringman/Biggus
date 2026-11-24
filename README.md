@@ -36,6 +36,8 @@ Also: a minimap button, Biggus lines on guild members' tooltips, and a settings 
 | `/biggus settings` | Turn chat comments, sharing, the minimap button and tooltips on or off |
 | `/biggus sync` | Check sharing: which guild members have Biggus, what's waiting to be sent, the last error |
 | `/biggus sync now` | Say hello to every guild member online again (to find new Biggus users right away) |
+| `/biggus block Name`, `/biggus unblock Name` | Ignore a player's Biggus messages, or stop ignoring them |
+| `/biggus forget Name` | Drop everything a player reported (bank entries, runs, deaths, loot, gold, goal) |
 | `/biggus reset` | Forget the bank history |
 | `/biggus help` | List the commands |
 
@@ -45,6 +47,7 @@ Also: a minimap button, Biggus lines on guild members' tooltips, and a settings 
 
 - Chat comments only show in your own chat window. Only the **Report** button and `/biggus report` post to guild chat.
 - The bank is only read while someone with Biggus has it open; what they read reaches everyone else's copy.
-- A goal set with `/biggus goal` is shared too: the newest one wins.
+- A goal set with `/biggus goal` is shared when the guild master or an officer sets it: the newest one wins.
+- Shared data is checked, limited and traceable; see [SECURITY.md](SECURITY.md) for what Biggus does against faked data and leaks, and what it can't prevent.
 - Net bank value counts items at vendor price, since addons can't see auction prices.
 - Everyone needs Biggus 0.4 or newer for sharing: 0.3 used the guild channel, which Forever refuses.
