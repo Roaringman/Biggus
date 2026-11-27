@@ -17,7 +17,7 @@ A World of Warcraft addon for the **Biggus** guild on WoW Forever. It keeps scor
 
 **Dungeons.** Entering a 5-player dungeon with at least one other guild member logs a run. The Dungeons view shows runs, deaths, best buddy and favorite dungeon per member, with titles like *Lives in Dungeons*, *Ride or Die*, *Floor Inspector* and *Unkillable*.
 
-**Loot envy.** Blue and epic drops in runs with guild members, the epics and blues each guildie won on a roll, and their Need and Greed rolls won over other guildies. Titles: *Luckiest &lt;your guild&gt;*, *Dice Lord*, *Loot Goblin*, *Needs Everything*, *Cursed by RNG*.
+**Loot envy.** Blue and epic drops in runs with guild members, and the epics and blues each guildie won on a Need or Greed roll. Titles: *Luckiest &lt;your guild&gt;*, *Dice Lord*, *Loot Goblin*, *Needs Everything*, *Cursed by RNG*.
 
 **Most Wanted.** When a guildie with Biggus is killed by an enemy-faction player outside battlegrounds and arenas, their copy reads the death recap and records the killer, the zone and subzone. The Most Wanted tab ranks killers (*Public Enemy #1*, *Has a Vendetta*, *Serial Ganker*, *Picks On Lowbies*), with the Enemy's Favourite Snack and the Danger Zone. Hovering an enemy player shows on their tooltip if they're on the list, and targeting one prints a warning.
 

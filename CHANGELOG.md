@@ -1,9 +1,9 @@
 # Biggus changelog
 
 ## 1.0.1
-- **Won epics and blues**: the Loot tab's new *Won E / B* column counts every epic and blue a guildie wins on a Need or Greed roll in a guild run, whoever they rolled against. *Beat guildies* still counts the wins over other guildies.
+- **Won epics and blues**: the Loot tab's new *Won E / B* column counts every epic and blue a guildie wins on a Need or Greed roll in a guild run, whoever they rolled against. Need and Greed wins, *Dice Lord* and *Needs Everything* now count all of these wins, not only wins over other guildies.
 - The settings window wraps long setting names and grows to fit them, instead of letting the text run past its edge.
-- Fixed: roll wins over guildies were not counted. Newer clients only print the winner in chat, so Biggus now reads who rolled Need and Greed from the game's loot roll history.
+- Fixed: roll wins were not counted. Newer clients only print the winner in chat, so Biggus now reads who rolled Need and Greed from the game's loot roll history.
 - New `/biggus rollcheck` shows what Biggus can see of loot rolls, to find out why one was not counted.
 
 ## 1.0.0

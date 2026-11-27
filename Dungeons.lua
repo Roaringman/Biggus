@@ -976,9 +976,7 @@ function D.Stats(hours)
             for _, e in pairs(r.rolls or {}) do
                 local p = people[e.who]
                 if p then
-                    if (e.beat or 0) > 0 then -- won over other guildies
-                        if e.kind == "need" then p.needWins = p.needWins + e.n else p.greedWins = p.greedWins + e.n end
-                    end
+                    if e.kind == "need" then p.needWins = p.needWins + e.n else p.greedWins = p.greedWins + e.n end
                     local q = e.q or select(3, GetItemInfo(e.id))
                     if q and q >= EPIC then p.wonEpics = p.wonEpics + e.n
                     elseif q and q >= MIN_LOOT_QUALITY then p.wonBlues = p.wonBlues + e.n end
@@ -1074,13 +1072,12 @@ end
 
 D.LootColumns = {
     { title = "#", width = 22, justify = "RIGHT" },
-    { title = "Name", width = 108 },
-    { title = "Epics", width = 36, justify = "RIGHT" },
-    { title = "Blues", width = 36, justify = "RIGHT" },
-    { title = "Won E / B", width = 62, justify = "RIGHT" },
-    { title = "Beat guildies", width = 80, justify = "RIGHT" },
-    { title = "Best drop", width = 136 },
-    { title = "Title", width = 110 },
+    { title = "Name", width = 116 },
+    { title = "Epics", width = 38, justify = "RIGHT" },
+    { title = "Blues", width = 38, justify = "RIGHT" },
+    { title = "Won E / B", width = 70, justify = "RIGHT" },
+    { title = "Best drop", width = 170 },
+    { title = "Title", width = 118 },
 }
 
 function D.LootRows(hours)
@@ -1100,8 +1097,7 @@ function D.LootRows(hours)
             B.ShortName(p.name),
             p.epics,
             p.rares,
-            p.wonEpics .. " / " .. p.wonBlues,  -- epics / blues won on rolls, over anyone
-            p.needWins .. " / " .. p.greedWins, -- rolls won over guildies: Need / Greed
+            p.wonEpics .. " / " .. p.wonBlues, -- epics / blues won on Need or Greed rolls
             p.best and ItemText(p.best) or "-",
             LootTitle(p, sum),
         }
@@ -1130,7 +1126,7 @@ function D.LootHighlight(hours)
     end
     if sum.diceLord then
         table.insert(parts, "Dice Lord: " .. B.ShortName(sum.diceLord.name) .. ", " .. sum.diceLord.rollWins
-            .. " rolls won over guildies")
+            .. " rolls won")
     end
     if #parts == 0 then return "No epic drops or roll wins logged yet. The RNG gods are watching." end
     return table.concat(parts, " · ")
@@ -1179,7 +1175,7 @@ function D.LootReport(hours, label)
     if sum.diceLord then
         local d = sum.diceLord
         table.insert(lines, "{triangle} Dice Lord: " .. B.ShortName(d.name) .. " (" .. d.rollWins
-            .. " rolls won over guildies: " .. d.needWins .. " Need, " .. d.greedWins .. " Greed)")
+            .. " rolls won: " .. d.needWins .. " Need, " .. d.greedWins .. " Greed)")
     end
     local cursed
     for _, p in ipairs(list) do
