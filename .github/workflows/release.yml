@@ -1,7 +1,7 @@
 # Packages Biggus when a version tag is pushed (git tag v0.6.1 && git push origin v0.6.1):
 #  - always: a Biggus-<tag>-forever.zip on a GitHub release
 #  - also an upload to CurseForge, once both are in place:
-#      * the project ID in Biggus.toc:  ## X-Curse-Project-ID: <number>
+#      * the project ID in Biggus.toc:  ## X-Curse-Project-ID: 1829335 (done)
 #      * a CurseForge API token as the CF_API_KEY secret (GitHub repo > Settings > Secrets and variables > Actions)
 # The packager reads "## Interface: 16001" from the .toc and tags the file for WoW Forever.
 name: Package and release
@@ -17,7 +17,7 @@ jobs:
     permissions:
       contents: write
     env:
-      CF_API_KEY: ${{ secrets.CF_API_KEY }}
+      CF_API_TOKEN: ${{ secrets.CF_API_KEY }} # the packager reads CF_API_TOKEN; the secret keeps its name
       GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Check out
