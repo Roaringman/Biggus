@@ -122,9 +122,10 @@ local function AddLines(tooltip)
         local together = (withYou > 0 and not UnitIsUnit(unit, "player")) and (", " .. withYou .. " with you") or ""
         tooltip:AddLine("Dungeons: " .. runTitle .. " (" .. runs.runs .. " runs" .. together .. ", "
             .. runs.deaths .. " deaths)", 1, 1, 1)
-        if runs.drops > 0 or runs.rollWins > 0 then
-            tooltip:AddLine("Loot: " .. lootTitle .. " (" .. runs.epics .. " epics, " .. runs.rares .. " blues, rolls won "
-                .. runs.needWins .. " Need / " .. runs.greedWins .. " Greed)", 1, 1, 1)
+        if runs.drops > 0 or runs.rollWins > 0 or runs.wonEpics + runs.wonBlues > 0 then
+            tooltip:AddLine("Loot: " .. lootTitle .. " (" .. runs.epics .. " epics, " .. runs.rares .. " blues)", 1, 1, 1)
+            tooltip:AddLine("Rolls won: " .. runs.wonEpics .. " epics, " .. runs.wonBlues .. " blues · over guildies "
+                .. runs.needWins .. " Need / " .. runs.greedWins .. " Greed", 1, 1, 1)
         end
     end
     tooltip:Show() -- resize to fit the new lines

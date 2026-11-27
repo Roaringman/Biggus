@@ -234,9 +234,10 @@ local function SetLoot(r, who, itemID, n, quality, src)
     end
 end
 
--- Roll wins over guildies, per run: "winner|item|need" -> { who, id, kind = "need" or "greed", n, beat }
--- n: how many times; beat: how many other guildies rolled on it too. Highest count anyone saw wins.
-local function SetRoll(r, who, itemID, kind, n, beat, src)
+-- Roll wins (blue and better), per run: "winner|item|need" -> { who, id, kind = "need" or "greed", n, beat, q }
+-- n: how many times; beat: how many other guildies rolled on it too (0: nobody, still a win);
+-- q: the item's quality. Highest count anyone saw wins.
+local function SetRoll(r, who, itemID, kind, n, beat, src, q)
     r.rolls = r.rolls or {}
     local key = who .. "|" .. itemID .. "|" .. kind
     local e = r.rolls[key]
@@ -245,6 +246,7 @@ local function SetRoll(r, who, itemID, kind, n, beat, src)
         r.rolls[key] = e
     end
     if (beat or 0) > e.beat then e.beat = beat end
+    if q and (not e.q or q > e.q) then e.q = q end
     if n > e.n then
         e.n, e.src = n, src
         r.u = Now()
@@ -273,7 +275,7 @@ local function LootMsg(r, e)
 end
 
 local function RollMsg(r, e)
-    return table.concat({ "W", r.at, r.id or 0, e.who, e.id, e.kind, e.n, e.beat }, "\t")
+    return table.concat({ "W", r.at, r.id or 0, e.who, e.id, e.kind, e.n, e.beat, e.q or 0 }, "\t")
 end
 
 -- Everything this copy learned about runs after `since` (server time): each run, then its deaths and
@@ -344,8 +346,9 @@ function D.Receive(f, from)
             if n then SetDeaths(r, who, n, from) end
         elseif f[1] == "W" then
             local itemID, kind = B.Num(f[5], 1, 10000000), (f[6] == "need" or f[6] == "greed") and f[6] or nil
-            local n, beat = B.Num(f[7], 1, MAX_LOOT), B.Num(f[8], 1, MAX_MEMBERS - 1)
-            if itemID and kind and n and beat then SetRoll(r, who, itemID, kind, n, beat, from) end
+            local n, beat = B.Num(f[7], 1, MAX_LOOT), B.Num(f[8], 0, MAX_MEMBERS - 1)
+            local q = B.Num(f[9], MIN_LOOT_QUALITY, MAX_QUALITY) -- missing from 1.0.1 and older
+            if itemID and kind and n and beat then SetRoll(r, who, itemID, kind, n, beat, from, q) end
         else
             local itemID, n, q = B.Num(f[5], 1, 10000000), B.Num(f[6], 1, MAX_LOOT), B.Num(f[7], MIN_LOOT_QUALITY, MAX_QUALITY)
             if itemID and n and q then SetLoot(r, who, itemID, n, q, from) end
@@ -644,14 +647,26 @@ local recentWins = {}  -- "winner|item" -> GetTime() when counted: the chat line
                        -- both tell of the same win, and it's counted once
 local rollStats = { chat = 0, history = 0, counted = 0 } -- for /biggus rollcheck
 
--- A finished roll: counted when a guildie in the run won it over at least one other guildie who
--- rolled Need or Greed on it too. choices: name -> "need"/"greed"/other, everyone who rolled.
+local QUALITY_COLORS = { ["0070dd"] = 3, a335ee = 4, ff8000 = 5, e6cc80 = 6 }
+
+local function Quality(link)
+    local _, _, q = GetItemInfo(link)
+    if q then return q end
+    local color = link:match("|c%x%x(%x%x%x%x%x%x)")
+    return color and QUALITY_COLORS[color:lower()]
+end
+
+-- A finished roll on a blue or better, won by a guildie in the run with Need or Greed: counted
+-- whoever else rolled. beat: how many other guildies rolled Need or Greed on it too (the "over
+-- guildies" wins). choices: name -> "need"/"greed"/other, everyone who rolled.
 local function CountWin(link, id, who, choices)
     if not id or not current or not inside then return end
     local name = B.CleanName(who)
     local winner = name and MemberNamed(current, name)
     local kind = winner and (choices[name] or choices[winner])
     if (kind ~= "need" and kind ~= "greed") or not winner then return end
+    local q = Quality(link)
+    if not q or q < MIN_LOOT_QUALITY or q > MAX_QUALITY then return end
     local mark = winner .. "|" .. id
     if recentWins[mark] and GetTime() - recentWins[mark] < 60 then return end
     local beat = 0
@@ -659,14 +674,13 @@ local function CountWin(link, id, who, choices)
         local o = MemberNamed(current, other)
         if o and o ~= winner and (k == "need" or k == "greed") then beat = beat + 1 end
     end
-    if beat == 0 then return end -- no guildie rolled against them
     recentWins[mark] = GetTime()
     rollStats.counted = rollStats.counted + 1
     local key = winner .. "|" .. id .. "|" .. kind
     seenRolls[key] = (seenRolls[key] or 0) + 1
-    SetRoll(current, winner, id, kind, seenRolls[key], beat)
+    SetRoll(current, winner, id, kind, seenRolls[key], beat, nil, q)
     Queue(RollMsg(current, current.rolls[key]))
-    if B.Opt("chatLoot") then
+    if beat > 0 and B.Opt("chatLoot") then -- the loot line already announces the drop itself
         B.Say(Pick(ROLL_QUIPS[kind]):format(B.ShortName(winner), link, beat, beat == 1 and "" or "s"))
     end
     B.Refresh()
@@ -788,15 +802,6 @@ local function OnRollLine(text)
     a = RollMatch(p.rolledGreed, text)
     if a then Choose(a[2], a[3], "greed") return true end
     return false
-end
-
-local QUALITY_COLORS = { ["0070dd"] = 3, a335ee = 4, ff8000 = 5, e6cc80 = 6 }
-
-local function Quality(link)
-    local _, _, q = GetItemInfo(link)
-    if q then return q end
-    local color = link:match("|c%x%x(%x%x%x%x%x%x)")
-    return color and QUALITY_COLORS[color:lower()]
 end
 
 local function OnLoot(text)
@@ -947,7 +952,7 @@ function D.Stats(hours)
                 local p = people[a]
                 if not p then
                     p = { name = a, runs = 0, buddies = {}, zones = {}, deaths = 0, epics = 0, rares = 0,
-                          needWins = 0, greedWins = 0 }
+                          needWins = 0, greedWins = 0, wonEpics = 0, wonBlues = 0 }
                     people[a] = p
                 end
                 p.runs = p.runs + 1
@@ -971,7 +976,12 @@ function D.Stats(hours)
             for _, e in pairs(r.rolls or {}) do
                 local p = people[e.who]
                 if p then
-                    if e.kind == "need" then p.needWins = p.needWins + e.n else p.greedWins = p.greedWins + e.n end
+                    if (e.beat or 0) > 0 then -- won over other guildies
+                        if e.kind == "need" then p.needWins = p.needWins + e.n else p.greedWins = p.greedWins + e.n end
+                    end
+                    local q = e.q or select(3, GetItemInfo(e.id))
+                    if q and q >= EPIC then p.wonEpics = p.wonEpics + e.n
+                    elseif q and q >= MIN_LOOT_QUALITY then p.wonBlues = p.wonBlues + e.n end
                 end
             end
         end
@@ -1064,12 +1074,13 @@ end
 
 D.LootColumns = {
     { title = "#", width = 22, justify = "RIGHT" },
-    { title = "Name", width = 116 },
-    { title = "Epics", width = 38, justify = "RIGHT" },
-    { title = "Blues", width = 38, justify = "RIGHT" },
-    { title = "Rolls won N / G", width = 90, justify = "RIGHT" },
-    { title = "Best drop", width = 170 },
-    { title = "Title", width = 118 },
+    { title = "Name", width = 108 },
+    { title = "Epics", width = 36, justify = "RIGHT" },
+    { title = "Blues", width = 36, justify = "RIGHT" },
+    { title = "Won E / B", width = 62, justify = "RIGHT" },
+    { title = "Beat guildies", width = 80, justify = "RIGHT" },
+    { title = "Best drop", width = 136 },
+    { title = "Title", width = 110 },
 }
 
 function D.LootRows(hours)
@@ -1089,6 +1100,7 @@ function D.LootRows(hours)
             B.ShortName(p.name),
             p.epics,
             p.rares,
+            p.wonEpics .. " / " .. p.wonBlues,  -- epics / blues won on rolls, over anyone
             p.needWins .. " / " .. p.greedWins, -- rolls won over guildies: Need / Greed
             p.best and ItemText(p.best) or "-",
             LootTitle(p, sum),
