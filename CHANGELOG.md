@@ -1,5 +1,9 @@
 # Biggus changelog
 
+## 1.0.1
+- Fixed: roll wins over guildies were not counted. Newer clients only print the winner in chat, so Biggus now reads who rolled Need and Greed from the game's loot roll history.
+- New `/biggus rollcheck` shows what Biggus can see of loot rolls, to find out why one was not counted.
+
 ## 1.0.0
 - First public release on CurseForge.
 - Guild chat reports and the *Luckiest* loot title use your own guild's name, so Biggus fits any guild.

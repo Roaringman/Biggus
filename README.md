@@ -36,6 +36,7 @@ Also: a minimap button, Biggus lines on guild members' tooltips, and a settings 
 | `/biggus report` | Post the bank highlights to guild chat |
 | `/biggus report dungeons` / `loot` / `wanted` / `avengers` | Post that tab's highlights |
 | `/biggus deathcheck` | Show what the game's death recap gave for your last death (to check Most Wanted works) |
+| `/biggus rollcheck` | Show what Biggus sees of loot rolls: the loot history, the last loot lines and the wins counted |
 | `/biggus goal 5000 New tabard` | Save for your own goal (5000g) instead of the next bank tab |
 | `/biggus goal` | Back to saving for the next bank tab |
 | `/biggus settings` | Turn chat comments, sharing, the minimap button and tooltips on or off |
