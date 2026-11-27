@@ -679,7 +679,7 @@ local VIEWS = {
     loot = {
         title = "loot envy: who gets the good stuff",
         empty = "No loot yet. Blue and epic drops and roll wins in runs with guild members show up here.",
-        foot = "Blue and better drops in guild runs. Rolls won: Need / Greed wins over at least one other guildie.",
+        foot = "Blue and better drops in guild runs. Won E / B: epics / blues won on Need or Greed rolls.",
         columns = function() return B.Dungeons.LootColumns end,
         rows = function() return B.Dungeons.LootRows(RANGES[rangeIndex].hours) end,
         info = function() return B.Dungeons.Info() end,
@@ -1094,6 +1094,8 @@ SlashCmdList.BIGGUS = function(msg)
         which.report()
     elseif cmd == "dungeons" or cmd == "loot" or cmd == "wanted" or cmd == "avengers" then
         Toggle(cmd)
+    elseif cmd == "rollcheck" then
+        B.Dungeons.RollCheck()
     elseif cmd == "deathcheck" then
         B.Wanted.DeathCheck()
     elseif cmd == "settings" or cmd == "options" or cmd == "config" then
@@ -1109,7 +1111,7 @@ SlashCmdList.BIGGUS = function(msg)
     elseif cmd == "help" then
         Say("/biggus - bank leaderboard · /biggus dungeons - runs and deaths · /biggus loot - loot envy · "
             .. "/biggus wanted - enemy players who killed guildies · /biggus avengers - guildies who got them back · "
-            .. "/biggus deathcheck - what your last death recap gave · /biggus report (or report dungeons / loot / "
+            .. "/biggus deathcheck - what your last death recap gave · /biggus rollcheck - what Biggus sees of loot rolls · /biggus report (or report dungeons / loot / "
             .. "wanted / avengers) - post to guild chat · /biggus goal 5000 Name - "
             .. "set a savings goal (/biggus goal alone: back to the next bank tab) · /biggus settings · "
             .. "/biggus sync - is sharing working? (/biggus sync now: say hello to everyone again) · "
