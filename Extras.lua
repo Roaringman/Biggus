@@ -148,7 +148,7 @@ local settings
 
 local function MakeSettings()
     settings = CreateFrame("Frame", "BiggusSettingsFrame", UIParent, "BasicFrameTemplateWithInset")
-    settings:SetSize(470, 56 + #OPTIONS * 30)
+    settings:SetSize(470, 400) -- the height is set once the rows are laid out
     settings:SetFrameStrata("FULLSCREEN_DIALOG") -- above the main window
     settings:SetClampedToScreen(true)
 
@@ -168,22 +168,47 @@ local function MakeSettings()
     title:SetPoint("TOP", 0, -5)
     title:SetText("|cffffd700Biggus|r settings")
 
+    -- each label wraps inside the window, and each row is as tall as its label
+    local WIDTH, LEFT, BOX, GAP = 470, 16, 26, 4
+    local labelWidth = WIDTH - LEFT - BOX - GAP - 18
     settings.boxes = {}
-    for i, option in ipairs(OPTIONS) do
+    local rows = {}
+    for _, option in ipairs(OPTIONS) do
         local box = CreateFrame("CheckButton", nil, settings, "UICheckButtonTemplate")
-        box:SetSize(26, 26)
-        box:SetPoint("TOPLEFT", 16, -34 - (i - 1) * 30)
+        box:SetSize(BOX, BOX)
         local label = settings:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        label:SetPoint("LEFT", box, "RIGHT", 4, 0)
+        label:SetWidth(labelWidth)
+        label:SetJustifyH("LEFT")
+        label:SetJustifyV("MIDDLE")
+        if label.SetWordWrap then label:SetWordWrap(true) end
         label:SetText(option.label)
+        label:SetPoint("LEFT", box, "RIGHT", GAP, 0)
         box:SetScript("OnClick", function(self)
             B.SetOpt(option.key, self:GetChecked() and true or false)
             if option.key == "minimap" then UpdateMinimapButton() end
         end)
         settings.boxes[option.key] = box
+        table.insert(rows, { box = box, label = label })
     end
 
+    -- rows one under the other, each as tall as its (wrapped) label; again on every show, since a
+    -- label's height can read 0 before the window was first drawn
+    local function Layout()
+        local y = -34
+        for _, row in ipairs(rows) do
+            local textHeight = math.ceil(row.label:GetStringHeight() or 0)
+            local rowHeight = math.max(BOX, textHeight + 6)
+            row.label:SetHeight(math.max(textHeight, 14))
+            row.box:ClearAllPoints()
+            row.box:SetPoint("TOPLEFT", LEFT, y - (rowHeight - BOX) / 2)
+            y = y - rowHeight - 4
+        end
+        settings:SetSize(WIDTH, -y + 12)
+    end
+    Layout()
+
     settings:SetScript("OnShow", function()
+        Layout()
         for key, box in pairs(settings.boxes) do box:SetChecked(B.Opt(key)) end
     end)
     settings:Hide()
