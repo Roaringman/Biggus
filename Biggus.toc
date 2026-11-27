@@ -5,7 +5,6 @@
 ## Version: 1.0.1
 ## SavedVariables: BiggusDB
 ## IconTexture: Interface\Icons\INV_Misc_Coin_02
-## X-Curse-Project-ID: 1829335
 ## X-License: MIT
 
 Biggus.lua
