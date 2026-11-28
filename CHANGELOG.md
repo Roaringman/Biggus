@@ -1,5 +1,10 @@
 # Biggus changelog
 
+## 1.0.2
+
+**Fixed**
+- Loot and roll wins were never recorded on WoW Forever. Its loot roll messages start with a [Loot] tag, its item links use a different colour code, and it reads item data through a newer function; Biggus now handles all three. Drops, roll wins (including the short *(Need - 46) Won:* lines) and the bank's item values are counted again.
+
 ## 1.0.1
 
 **New**

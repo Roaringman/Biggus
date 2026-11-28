@@ -106,6 +106,38 @@ function B.Plain(value)
     return value
 end
 
+-- Item data. WoW Forever has C_Item.GetItemInfo and not the old global GetItemInfo, so the old name
+-- is only a fallback; every value as GetItemInfo returns it, or nothing (an item not loaded yet).
+local ItemInfoFn = (C_Item and C_Item.GetItemInfo) or GetItemInfo
+local function IfOk(ok, ...) -- pcall's results without the flag, all of them (nils inside too)
+    if ok then return ... end
+end
+function B.ItemInfo(item)
+    if not item or type(ItemInfoFn) ~= "function" then return end
+    return IfOk(pcall(ItemInfoFn, item))
+end
+
+local QUALITY_HEX = { ff9d9d9d = 0, ffffffff = 1, ff1eff00 = 2, ff0070dd = 3, ffa335ee = 4, ffff8000 = 5,
+                      ffe6cc80 = 6, ff00ccff = 7 }
+
+-- An item's quality (0 grey ... 4 epic, 5 legendary): from the game's item data, else from the link's
+-- colour, Forever's "|cnIQ3:" form or the old "|cff0070dd" one.
+function B.ItemQuality(item)
+    local id = type(item) == "number" and item or (type(item) == "string" and tonumber(item:match("item:(%d+)")))
+    if id and C_Item and C_Item.GetItemQualityByID then
+        local ok, q = pcall(C_Item.GetItemQualityByID, id)
+        if ok and type(q) == "number" then return q end
+    end
+    local _, _, q = B.ItemInfo(item)
+    if type(q) == "number" then return q end
+    if type(item) == "string" then
+        q = tonumber(item:match("|cnIQ(%d+)"))
+        if q then return q end
+        local hex = item:match("|c(%x%x%x%x%x%x%x%x)")
+        return hex and QUALITY_HEX[hex:lower()]
+    end
+end
+
 function B.Num(value, min, max)
     local n = tonumber(value)
     if not n or n ~= n or n < min or n > max or n ~= math.floor(n) then return nil end
@@ -531,7 +563,7 @@ local function Stats(hours)
                     if e.type == "repair" then p.repairs = p.repairs + 1 end
                 end
             else
-                local _, _, quality, _, _, _, _, _, _, _, sellPrice = GetItemInfo(e.item or e.id)
+                local _, _, quality, _, _, _, _, _, _, _, sellPrice = B.ItemInfo(e.item or e.id)
                 local value = (sellPrice or 0) * e.count
                 if e.type == "deposit" then
                     p.itemsIn = p.itemsIn + e.count

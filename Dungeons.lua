@@ -505,60 +505,32 @@ local function WatchDeaths()
 end
 
 ---------------------------------------------------------------------------------------------------
--- Loot
+-- Loot and roll lines
 
--- the game's "%s receives loot: %s." as a pattern: "^(.+) receives loot: (.+)%.$"
-local function ToPattern(fmt)
+-- The game's message with the "[Loot]: " tag taken out. On Forever (like retail) the roll messages
+-- start with a loot history link, "|HlootHistory:%d|h[Loot]|h: %s won: %s", whose number is one of
+-- the placeholders; the lines are matched with the tag cleaned off, so the format loses it too and
+-- the numbered placeholders after it move down one. (ForeverDungeonJournal does the same.)
+local function GameFormat(fmt)
     if type(fmt) ~= "string" then return nil end
-    local p = fmt:gsub("[%(%)%.%+%-%*%?%[%]%^%$]", "%%%0")
-    p = p:gsub("%%s", "(.+)")
-    p = p:gsub("%%d", "(%%d+)")
-    return "^" .. p .. "$"
-end
-
-local lootPatterns
-local function LootPatterns()
-    if lootPatterns then return lootPatterns end
-    lootPatterns = {}
-    -- the ones with a count first: the plain ones would match them too
-    for _, spec in ipairs({
-        { LOOT_ITEM_MULTIPLE, false }, { LOOT_ITEM, false },
-        { LOOT_ITEM_SELF_MULTIPLE, true }, { LOOT_ITEM_SELF, true },
-    }) do
-        local p = ToPattern(spec[1])
-        if p then table.insert(lootPatterns, { p, spec[2] }) end
+    local s, e = fmt:find("|HlootHistory:.-|h.-|h:?%s*")
+    if not s then return fmt end
+    local tagPos = tonumber(fmt:sub(s, e):match("%%(%d)%$"))
+    local rest = fmt:sub(1, s - 1) .. fmt:sub(e + 1)
+    if tagPos then
+        rest = rest:gsub("%%(%d)%$", function(pos)
+            pos = tonumber(pos)
+            return "%" .. (pos > tagPos and pos - 1 or pos) .. "$"
+        end)
     end
-    return lootPatterns
+    return rest
 end
-
--- A chat line without the extras the client can put round names: a "[Loot]: " tag (a lootHistory
--- link), player links and colours. Item links are kept. (Forever does this; ForeverDungeonJournal
--- found the same.)
-local function CleanLine(text)
-    return (text:gsub("|HlootHistory:[^|]*|h.-|h:?%s*", "")
-        :gsub("|Hplayer:[^|]*|h%[?([^%]|]*)%]?|h", "%1")
-        :gsub("|c%x%x%x%x%x%x%x%x([^|]*)|r", "%1"))
-end
-
--- who, item link, how many
-local function ParseLoot(text)
-    local line = CleanLine(text) -- not the raw line: "(.+)" would take link codes into the name
-    for _, l in ipairs(LootPatterns()) do
-        local a, b, c = line:match(l[1])
-        if a then
-            if l[2] then return FullName("player"), a, tonumber(b) or 1 end
-            return a, b, tonumber(c) or 1
-        end
-    end
-end
-
----------------------------------------------------------------------------------------------------
--- Loot rolls: who rolled Need or Greed on what, and who won it
 
 -- A game message with numbered or plain placeholders ("%1$s won: %2$s", "%s won: %s") as a
--- pattern, with the order its captures come in. Not anchored at the start: a tag can come first.
-local function RollPattern(fmt)
-    if type(fmt) ~= "string" then return nil end
+-- pattern, with the order its captures come in.
+local function MakePattern(fmt)
+    fmt = GameFormat(fmt)
+    if type(fmt) ~= "string" or fmt == "" then return nil end
     local out, order, i = {}, {}, 1
     while i <= #fmt do
         local c = fmt:sub(i, i)
@@ -588,15 +560,24 @@ local function RollPattern(fmt)
     return { pattern = table.concat(out) .. "$", order = order }
 end
 
--- the message's values in the game's order (args[1] is %1$s), or nil
-local function RollMatch(p, text)
+-- A chat line without the extras the client can put round names: the "[Loot]: " tag, player links
+-- and colours (old "|cffRRGGBB" and Forever's "|cnNAME:" form). Item links are kept whole: their
+-- colour code is followed by the link itself, not by plain text.
+local function CleanLine(text)
+    return (text:gsub("|HlootHistory:[^|]*|h.-|h:?%s*", "")
+        :gsub("|Hplayer:[^|]*|h%[?([^%]|]*)%]?|h", "%1")
+        :gsub("|c%x%x%x%x%x%x%x%x([^|]*)|r", "%1")
+        :gsub("|cn[%w_]+:([^|]*)|r", "%1"))
+end
+
+-- the message's values in the game's order (args[1] is %1$s), or nil. Always the cleaned line:
+-- matched against the raw one, "(.-)" would take link and colour codes into a player's name. From
+-- its start first, then anywhere in it.
+local function Match(p, text)
     if not p then return nil end
-    -- Always the cleaned line (item links survive the cleaning): matched against the raw one, "(.-)"
-    -- would happily take link and colour codes into a player's name. From its start first, then
-    -- anywhere in it (a tag before it).
     local clean = CleanLine(text)
-    for _, try in ipairs({ { clean, "^" .. p.pattern }, { clean, p.pattern } }) do
-        local caps = { try[1]:match(try[2]) }
+    for _, pattern in ipairs({ "^" .. p.pattern, p.pattern }) do
+        local caps = { clean:match(pattern) }
         if #caps > 0 then
             local args = {}
             for k, index in ipairs(p.order) do args[index] = caps[k] end
@@ -605,21 +586,76 @@ local function RollMatch(p, text)
     end
 end
 
+-- A message's item link, number and player name, told apart by what they look like, so the word
+-- order of the client's language doesn't matter.
+local function Args(args)
+    local link, n, name
+    for _, v in pairs(args or {}) do
+        if type(v) == "string" then
+            if v:find("|Hitem:", 1, true) then link = link or v
+            elseif not n and v:match("^%d+$") then n = tonumber(v)
+            elseif v ~= "" then name = name or v end
+        end
+    end
+    return link, n, name
+end
+
+local lootPatterns
+local function LootPatterns()
+    if lootPatterns then return lootPatterns end
+    lootPatterns = {}
+    -- the ones with a count first: the plain ones would match them too
+    for _, spec in ipairs({
+        { LOOT_ITEM_MULTIPLE, false }, { LOOT_ITEM, false },
+        { LOOT_ITEM_SELF_MULTIPLE, true }, { LOOT_ITEM_SELF, true },
+    }) do
+        local p = MakePattern(spec[1])
+        if p then table.insert(lootPatterns, { p, spec[2] }) end
+    end
+    return lootPatterns
+end
+
+-- who, item link, how many
+local function ParseLoot(text)
+    for _, l in ipairs(LootPatterns()) do
+        local a = Match(l[1], text)
+        if a then
+            local link, n, name = Args(a)
+            if not link then return nil end -- a line with a plain [Name], no link
+            if l[2] then name = FullName("player") end
+            return name, link, n or 1
+        end
+    end
+end
+
 local rollPatterns
 local function RollPatterns()
     if rollPatterns then return rollPatterns end
     rollPatterns = {
-        youWon = RollPattern(LOOT_ROLL_YOU_WON),          -- "You won: %s"
-        won = RollPattern(LOOT_ROLL_WON),                 -- "%s won: %s"
-        allPassed = RollPattern(LOOT_ROLL_ALL_PASSED),    -- "Everyone passed on: %s"
-        needSelf = RollPattern(LOOT_ROLL_NEED_SELF),      -- "You have selected Need for: %s"
-        greedSelf = RollPattern(LOOT_ROLL_GREED_SELF),
-        needOther = RollPattern(LOOT_ROLL_NEED),          -- "%s has selected Need for: %s"
-        greedOther = RollPattern(LOOT_ROLL_GREED),
-        rolledNeed = RollPattern(LOOT_ROLL_ROLLED_NEED),  -- "Need Roll - %d for %s by %s"
-        rolledNeedBonus = RollPattern(LOOT_ROLL_ROLLED_NEED_ROLE_BONUS),
-        rolledGreed = RollPattern(LOOT_ROLL_ROLLED_GREED),
+        youWon = MakePattern(LOOT_ROLL_YOU_WON),          -- "You won: %s"
+        won = MakePattern(LOOT_ROLL_WON),                 -- "%s won: %s"
+        allPassed = MakePattern(LOOT_ROLL_ALL_PASSED),    -- "Everyone passed on: %s"
+        needSelf = MakePattern(LOOT_ROLL_NEED_SELF),      -- "You have selected Need for: %s"
+        greedSelf = MakePattern(LOOT_ROLL_GREED_SELF),
+        needOther = MakePattern(LOOT_ROLL_NEED),          -- "%s has selected Need for: %s"
+        greedOther = MakePattern(LOOT_ROLL_GREED),
+        rolledNeed = MakePattern(LOOT_ROLL_ROLLED_NEED),  -- "Need Roll - %d for %s by %s"
+        rolledNeedBonus = MakePattern(LOOT_ROLL_ROLLED_NEED_ROLE_BONUS),
+        rolledGreed = MakePattern(LOOT_ROLL_ROLLED_GREED),
+        -- the short form, the game's default: only the winner, with their roll in it,
+        -- "%s (Need - %d) Won: %s", "You (Greed - %d) Won: %s"
+        noSpam = {},
     }
+    for _, kind in ipairs({ "NEED", "GREED", "DE", "TRANSMOG" }) do
+        for _, who in ipairs({ "YOU_WON", "WON" }) do
+            local p = MakePattern(_G["LOOT_ROLL_" .. who .. "_NO_SPAM_" .. kind])
+            if p then
+                -- Disenchant and Transmog count as Greed, as in the loot history
+                table.insert(rollPatterns.noSpam, { p = p, me = who == "YOU_WON",
+                    kind = kind == "NEED" and "need" or "greed" })
+            end
+        end
+    end
     return rollPatterns
 end
 
@@ -647,14 +683,7 @@ local recentWins = {}  -- "winner|item" -> GetTime() when counted: the chat line
                        -- both tell of the same win, and it's counted once
 local rollStats = { chat = 0, history = 0, counted = 0 } -- for /biggus rollcheck
 
-local QUALITY_COLORS = { ["0070dd"] = 3, a335ee = 4, ff8000 = 5, e6cc80 = 6 }
-
-local function Quality(link)
-    local _, _, q = GetItemInfo(link)
-    if q then return q end
-    local color = link:match("|c%x%x(%x%x%x%x%x%x)")
-    return color and QUALITY_COLORS[color:lower()]
-end
+local Quality = B.ItemQuality
 
 -- A finished roll on a blue or better, won by a guildie in the run with Need or Greed: counted
 -- whoever else rolled. beat: how many other guildies rolled Need or Greed on it too (the "over
@@ -779,28 +808,37 @@ end
 -- a loot-roll line: true when it was one
 local function OnRollLine(text)
     local p, me = RollPatterns(), FullName("player")
-    local a = RollMatch(p.youWon, text)
-    if a then Won(a[1], me) return true end
-    a = RollMatch(p.won, text)
-    if a then Won(a[2], a[1]) return true end
-    a = RollMatch(p.allPassed, text)
-    if a then
-        local id = ItemIDOf(a[1])
+    -- the short winner line: who won, and with Need or Greed
+    for _, ns in ipairs(p.noSpam) do
+        local link, _, name = Args(Match(ns.p, text))
+        if link then
+            if ns.me or not name then name = me end
+            Choose(link, name, ns.kind)
+            Won(link, name)
+            return true
+        end
+    end
+    local link, _, name = Args(Match(p.youWon, text))
+    if link then Won(link, me) return true end
+    link, _, name = Args(Match(p.won, text))
+    if link and name then Won(link, name) return true end
+    link = Args(Match(p.allPassed, text))
+    if link then
+        local id = ItemIDOf(link)
         if id then pendingRolls[id] = nil end
         return true
     end
-    a = RollMatch(p.needSelf, text)
-    if a then Choose(a[1], me, "need") return true end
-    a = RollMatch(p.greedSelf, text)
-    if a then Choose(a[1], me, "greed") return true end
-    a = RollMatch(p.needOther, text)
-    if a then Choose(a[2], a[1], "need") return true end
-    a = RollMatch(p.greedOther, text)
-    if a then Choose(a[2], a[1], "greed") return true end
-    a = RollMatch(p.rolledNeed, text) or RollMatch(p.rolledNeedBonus, text)
-    if a then Choose(a[2], a[3], "need") return true end
-    a = RollMatch(p.rolledGreed, text)
-    if a then Choose(a[2], a[3], "greed") return true end
+    for _, spec in ipairs({ { p.needSelf, "need", true }, { p.greedSelf, "greed", true },
+                            { p.needOther, "need" }, { p.greedOther, "greed" },
+                            { p.rolledNeed, "need" }, { p.rolledNeedBonus, "need" },
+                            { p.rolledGreed, "greed" } }) do
+        link, _, name = Args(Match(spec[1], text))
+        if link then
+            if spec[3] or not name then name = me end
+            Choose(link, name, spec[2])
+            return true
+        end
+    end
     return false
 end
 
@@ -924,7 +962,7 @@ local function Top(counts)
 end
 
 local function ItemLevel(itemID)
-    local _, _, _, level = GetItemInfo(itemID)
+    local _, _, _, level = B.ItemInfo(itemID)
     return level or 0
 end
 
@@ -977,7 +1015,7 @@ function D.Stats(hours)
                 local p = people[e.who]
                 if p then
                     if e.kind == "need" then p.needWins = p.needWins + e.n else p.greedWins = p.greedWins + e.n end
-                    local q = e.q or select(3, GetItemInfo(e.id))
+                    local q = e.q or B.ItemQuality(e.id)
                     if q and q >= EPIC then p.wonEpics = p.wonEpics + e.n
                     elseif q and q >= MIN_LOOT_QUALITY then p.wonBlues = p.wonBlues + e.n end
                 end
@@ -1037,7 +1075,7 @@ local function LootTitle(p, sum)
 end
 
 local function ItemText(itemID)
-    local _, link = GetItemInfo(itemID)
+    local _, link = B.ItemInfo(itemID)
     if link then return link end
     if C_Item and C_Item.RequestLoadItemDataByID then C_Item.RequestLoadItemDataByID(itemID) end
     return "item " .. itemID
@@ -1164,7 +1202,7 @@ function D.LootReport(hours, label)
     local lines = { B.GuildName() .. " loot envy report, " .. label:lower() .. ":" }
     local lucky = sum.luckiest
     if lucky then
-        local _, link = GetItemInfo(lucky.best)
+        local _, link = B.ItemInfo(lucky.best)
         table.insert(lines, "{star} Luckiest " .. B.GuildName() .. ": " .. B.ShortName(lucky.name) .. " (" .. lucky.epics
             .. " epics" .. (link and (", best: " .. link) or "") .. ")")
     end
