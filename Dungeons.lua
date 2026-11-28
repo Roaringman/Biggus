@@ -557,6 +557,9 @@ local function MakePattern(fmt)
             i = i + 1
         end
     end
+    -- the full stop at the end is optional: Forever writes "Name receives loot: [item]." but
+    -- "You receive loot: [item]" without one
+    if out[#out] == "%." then out[#out] = "%.?" end
     return { pattern = table.concat(out) .. "$", order = order }
 end
 
